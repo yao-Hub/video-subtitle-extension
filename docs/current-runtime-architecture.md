@@ -1,14 +1,14 @@
 # 当前运行架构与执行流程
 
-| 项目 | 当前状态 |
-| --- | --- |
-| 产品版本 | `3.0.0` |
-| 文档日期 | 2026-11-06 |
-| 产品形态 | Chrome Manifest V3 扩展 |
-| 当前输出 | 简体中文验证链路 |
-| 运行位置 | 浏览器本地 |
-| 远程服务器 | 无 |
-| 神经网络模型数量 | 3 |
+| 项目             | 当前状态                |
+| ---------------- | ----------------------- |
+| 产品版本         | `3.0.0`                 |
+| 文档日期         | 2026-11-06              |
+| 产品形态         | Chrome Manifest V3 扩展 |
+| 当前输出         | 简体中文验证链路        |
+| 运行位置         | 浏览器本地              |
+| 远程服务器       | 无                      |
+| 神经网络模型数量 | 3                       |
 
 本文描述当前代码实际运行方式。多语言识别、目标语言选择和翻译不在当前实现范围内。
 
@@ -51,30 +51,30 @@ mindmap
 
 ## 端到端执行顺序
 
-| 顺序 | 阶段 | 执行位置 | 核心技术 | 输出 |
-| ---: | --- | --- | --- | --- |
-| 1 | 打开字幕窗口 | Background、Panel | Chrome Windows API、React | 字幕控制窗口 |
-| 2 | 申请标签页音频 | Background | `chrome.tabCapture` | MediaStream ID |
-| 3 | 建立本地音频环境 | Offscreen | Offscreen Document | 音频会话 |
-| 4 | 加载模型 | ASR Worker | Sherpa-ONNX、ONNX Runtime Web | VAD + ASR 就绪 |
-| 5 | 音频转换和分帧 | AudioWorklet | Web Audio API | 16 kHz PCM16，每帧 20 ms |
-| 6 | 人声检测 | ASR Worker | Silero VAD v5 | 人声概率和语音段 |
-| 7 | 流式识别 | ASR Worker | Streaming Zipformer | 原始预览和终稿 |
-| 8 | 标点恢复 | Caption Worker | CT-Punc int8 | 带标点文本 |
-| 9 | 字幕切分 | Caption Worker | 模型标点优先规则 | 一条或多条字幕 |
-| 10 | 有序投递 | Offscreen、Background、Panel | `deliverySequence`、串行消息 | 按产生顺序显示 |
-| 11 | UI 展示 | Panel | React | 时间轴、自动滚动、跳转 |
-| 12 | 停止和收尾 | 全链路 | Flush 和资源释放 | 最后终稿、关闭会话 |
+| 顺序 | 阶段             | 执行位置                     | 核心技术                      | 输出                     |
+| ---: | ---------------- | ---------------------------- | ----------------------------- | ------------------------ |
+|    1 | 打开字幕窗口     | Background、Panel            | Chrome Windows API、React     | 字幕控制窗口             |
+|    2 | 申请标签页音频   | Background                   | `chrome.tabCapture`           | MediaStream ID           |
+|    3 | 建立本地音频环境 | Offscreen                    | Offscreen Document            | 音频会话                 |
+|    4 | 加载模型         | ASR Worker                   | Sherpa-ONNX、ONNX Runtime Web | VAD + ASR 就绪           |
+|    5 | 音频转换和分帧   | AudioWorklet                 | Web Audio API                 | 16 kHz PCM16，每帧 20 ms |
+|    6 | 人声检测         | ASR Worker                   | Silero VAD v5                 | 人声概率和语音段         |
+|    7 | 流式识别         | ASR Worker                   | Streaming Zipformer           | 原始预览和终稿           |
+|    8 | 标点恢复         | Caption Worker               | CT-Punc int8                  | 带标点文本               |
+|    9 | 字幕切分         | Caption Worker               | 模型标点优先规则              | 一条或多条字幕           |
+|   10 | 有序投递         | Offscreen、Background、Panel | `deliverySequence`、串行消息  | 按产生顺序显示           |
+|   11 | UI 展示          | Panel                        | React                         | 时间轴、自动滚动、跳转   |
+|   12 | 停止和收尾       | 全链路                       | Flush 和资源释放              | 最后终稿、关闭会话       |
 
 ## 1. 模型清单与职责
 
 当前使用三个相互独立的神经网络模型，依次负责“人声检测”“音频转文字”和“文字加标点”。
 
-| 模型 | 处理阶段 | 核心作用 | 执行位置 |
-| --- | --- | --- | --- |
-| Silero VAD v5 | ASR 之前 | 判断音频块是否包含人声 | ASR Worker |
-| Streaming Zipformer ASR | VAD 之后 | 把人声识别为原始文字 | ASR Worker |
-| CT-Punc | ASR 之后 | 为原始文字插入标点 | Caption Worker |
+| 模型                    | 处理阶段 | 核心作用               | 执行位置       |
+| ----------------------- | -------- | ---------------------- | -------------- |
+| Silero VAD v5           | ASR 之前 | 判断音频块是否包含人声 | ASR Worker     |
+| Streaming Zipformer ASR | VAD 之后 | 把人声识别为原始文字   | ASR Worker     |
+| CT-Punc                 | ASR 之后 | 为原始文字插入标点     | Caption Worker |
 
 当前没有语言检测、翻译、说话人分离或目标语言模型。
 
@@ -82,14 +82,14 @@ mindmap
 
 #### 基本信息
 
-| 项目 | 内容 |
-| --- | --- |
-| 模型标识 | `streaming-zipformer-bilingual-zh-en-2023-02-20` |
-| 模型类型 | 流式 Zipformer 中英双语自动语音识别 |
-| 模型文件 | `encoder.onnx`、`decoder.onnx`、`joiner.onnx`、`tokens.txt` |
-| 封装位置 | Sherpa-ONNX `.data` 虚拟文件系统 |
-| 推理运行时 | Sherpa-ONNX v1.13.7 WebAssembly SIMD |
-| 执行位置 | `apps/extension/src/asr-worker.ts` |
+| 项目       | 内容                                                        |
+| ---------- | ----------------------------------------------------------- |
+| 模型标识   | `streaming-zipformer-bilingual-zh-en-2023-02-20`            |
+| 模型类型   | 流式 Zipformer 中英双语自动语音识别                         |
+| 模型文件   | `encoder.onnx`、`decoder.onnx`、`joiner.onnx`、`tokens.txt` |
+| 封装位置   | Sherpa-ONNX `.data` 虚拟文件系统                            |
+| 推理运行时 | Sherpa-ONNX v1.13.7 WebAssembly SIMD                        |
+| 执行位置   | `apps/extension/src/asr-worker.ts`                          |
 
 编码器、解码器、联合网络和词表是一个 ASR 系统的组成部分，不是三个独立模型。
 
@@ -136,13 +136,13 @@ ASR 配置使用 `enableEndpoint = 0`，因此识别段起止由应用层 VAD �
 
 #### 基本信息
 
-| 项目 | 内容 |
-| --- | --- |
-| 模型 | `silero-vad-v5` |
-| 类型 | 神经网络人声活动检测 |
-| 模型文件 | `silero_vad_v5.onnx` |
+| 项目       | 内容                                 |
+| ---------- | ------------------------------------ |
+| 模型       | `silero-vad-v5`                      |
+| 类型       | 神经网络人声活动检测                 |
+| 模型文件   | `silero_vad_v5.onnx`                 |
 | 推理运行时 | ONNX Runtime Web 1.31.1，WASM 单线程 |
-| 执行位置 | `apps/extension/src/asr-worker.ts` |
+| 执行位置   | `apps/extension/src/asr-worker.ts`   |
 
 #### 输入
 
@@ -172,14 +172,14 @@ AudioWorklet 输出的 16 kHz 单声道 PCM
 
 #### 基本信息
 
-| 项目 | 内容 |
-| --- | --- |
-| 模型标识 | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
-| 模型类型 | CT-Transformer 标点恢复，int8 ONNX |
-| 模型文件 | `model.int8.onnx`、`tokens.json` |
-| 推理运行时 | ONNX Runtime Web 1.31.1，WASM 单线程 |
-| 执行位置 | `apps/extension/src/caption-worker.ts` |
-| 单次输入上限 | 200 个 token；超过时保持原始文本 |
+| 项目         | 内容                                                                 |
+| ------------ | -------------------------------------------------------------------- |
+| 模型标识     | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
+| 模型类型     | CT-Transformer 标点恢复，int8 ONNX                                   |
+| 模型文件     | `model.int8.onnx`、`tokens.json`                                     |
+| 推理运行时   | ONNX Runtime Web 1.31.1，WASM 单线程                                 |
+| 执行位置     | `apps/extension/src/caption-worker.ts`                               |
+| 单次输入上限 | 200 个 token；超过时保持原始文本                                     |
 
 #### 输入
 
@@ -242,11 +242,11 @@ CT-Punc 输出：
 
 ### 1.5 非模型能力
 
-| 能力 | 当前实现 |
-| --- | --- |
+| 能力     | 当前实现                               |
+| -------- | -------------------------------------- |
 | 字幕切分 | 模型标点优先、字幕宽度兜底的确定性算法 |
-| 语言检测 | 未实现 |
-| 翻译 | 未实现 |
+| 语言检测 | 未实现                                 |
+| 翻译     | 未实现                                 |
 
 当前有三个神经网络模型，不存在语言检测、翻译或目标语言模型。
 
@@ -278,16 +278,16 @@ Popup Panel
   └── 字幕列表、时间轴、跳转、自动滚动
 ```
 
-| 组件 | 生命周期 | 主要职责 |
-| --- | --- | --- |
-| `background.ts` | MV3 Service Worker | 窗口、标签页、音频权限、Offscreen 和事件路由 |
-| `page-bridge.ts` | 当前网页标签页 | 查询 `<video>`、执行跳转 |
-| `offscreen.ts` | 音频会话期间 | 持有音频流、Worker 和串行事件队列 |
-| `audio-capture-processor.ts` | AudioContext 生命周期 | 混音、重采样、PCM16 和分帧 |
-| `asr-worker.ts` | 识别会话期间 | ASR、VAD 和原始识别文本 |
-| `caption-worker.ts` | 识别会话期间 | CT-Punc、分句和后处理队列 |
-| `panel.tsx` | 字幕窗口打开期间 | 启动停止、字幕展示、去重和时间轴 |
-| `packages/protocol` | 编译期类型 | 扩展内部消息协议 |
+| 组件                         | 生命周期              | 主要职责                                     |
+| ---------------------------- | --------------------- | -------------------------------------------- |
+| `background.ts`              | MV3 Service Worker    | 窗口、标签页、音频权限、Offscreen 和事件路由 |
+| `page-bridge.ts`             | 当前网页标签页        | 查询 `<video>`、执行跳转                     |
+| `offscreen.ts`               | 音频会话期间          | 持有音频流、Worker 和串行事件队列            |
+| `audio-capture-processor.ts` | AudioContext 生命周期 | 混音、重采样、PCM16 和分帧                   |
+| `asr-worker.ts`              | 识别会话期间          | ASR、VAD 和原始识别文本                      |
+| `caption-worker.ts`          | 识别会话期间          | CT-Punc、分句和后处理队列                    |
+| `panel.tsx`                  | 字幕窗口打开期间      | 启动停止、字幕展示、去重和时间轴             |
+| `packages/protocol`          | 编译期类型            | 扩展内部消息协议                             |
 
 ## 3. 启动顺序
 
@@ -319,29 +319,29 @@ MediaStreamSource
 └── AudioWorkletNode → analysisGain(0.0) → AudioContext.destination
 ```
 
-| 属性 | 当前值 |
-| --- | --- |
-| 采样率 | 16 kHz |
-| 声道 | 单声道 |
-| 格式 | signed PCM16 |
-| 帧长 | 320 samples |
-| 帧时长 | 20 ms |
+| 属性   | 当前值                          |
+| ------ | ------------------------------- |
+| 采样率 | 16 kHz                          |
+| 声道   | 单声道                          |
+| 格式   | signed PCM16                    |
+| 帧长   | 320 samples                     |
+| 帧时长 | 20 ms                           |
 | 时间戳 | ASR Worker 按累计 sample 数换算 |
 
 PCM `ArrayBuffer` 使用 Transferable 发给 ASR Worker。
 
 ## 5. VAD 与 ASR 执行顺序
 
-| 参数 | 当前值 |
-| --- | ---: |
-| VAD 音频块 | 512 samples，32 ms |
-| 人声概率开始阈值 | `0.5` |
-| 人声概率结束阈值 | `0.35` |
-| 连续人声启动 | 2 个 VAD 块，64 ms |
-| 前置缓冲 | 300 ms |
-| 结束静音 | 650 ms |
-| 最长语音段 | 12 秒 |
-| 临时结果间隔 | 250 ms |
+| 参数             |             当前值 |
+| ---------------- | -----------------: |
+| VAD 音频块       | 512 samples，32 ms |
+| 人声概率开始阈值 |              `0.5` |
+| 人声概率结束阈值 |             `0.35` |
+| 连续人声启动     | 2 个 VAD 块，64 ms |
+| 前置缓冲         |             300 ms |
+| 结束静音         |             650 ms |
+| 最长语音段       |              12 秒 |
+| 临时结果间隔     |             250 ms |
 
 ```text
 20 ms PCM 音频帧
@@ -391,10 +391,10 @@ ASR Worker 只发送：
 
 Offscreen 路由规则：
 
-| 状态 | 行为 |
-| --- | --- |
-| Caption Worker 已就绪 | 原始文本进入 Caption Worker |
-| Caption Worker 尚未就绪 | 原始文本直接转换为 UI 字幕 |
+| 状态                    | 行为                           |
+| ----------------------- | ------------------------------ |
+| Caption Worker 已就绪   | 原始文本进入 Caption Worker    |
+| Caption Worker 尚未就绪 | 原始文本直接转换为 UI 字幕     |
 | Caption Worker 异常退出 | 后续原始文本直接转换为 UI 字幕 |
 
 Caption Worker 队列规则：
@@ -418,15 +418,15 @@ CT-Punc 执行顺序：
 
 字幕切分规则：
 
-| 规则 | 当前实现 |
-| --- | --- |
-| 首选边界 | CT-Punc 输出的句号、问号、逗号等 |
-| 目标长度 | 20 个字符 |
-| 最大长度 | 28 个字符 |
-| 无标点兜底 | 在最大宽度内按字符位置切分 |
-| 人工补标点 | 不做 |
-| 连接词词典 | 不使用 |
-| 时间分配 | 按分句字符权重分配原识别段时长 |
+| 规则       | 当前实现                         |
+| ---------- | -------------------------------- |
+| 首选边界   | CT-Punc 输出的句号、问号、逗号等 |
+| 目标长度   | 20 个字符                        |
+| 最大长度   | 28 个字符                        |
+| 无标点兜底 | 在最大宽度内按字符位置切分       |
+| 人工补标点 | 不做                             |
+| 连接词词典 | 不使用                           |
+| 时间分配   | 按分句字符权重分配原识别段时长   |
 
 一个 ASR 终稿可以产生多条 `caption.final`。
 
@@ -459,22 +459,22 @@ videoTimeMs = anchorVideoTimeMs
 
 ### 7.3 重复字幕合并
 
-| 情况 | 行为 |
-| --- | --- |
-| 时间重叠且一段文本包含另一段 | 合并 |
+| 情况                            | 行为 |
+| ------------------------------- | ---- |
+| 时间重叠且一段文本包含另一段    | 合并 |
 | 时间重叠且共享至少 6 个连续字符 | 合并 |
-| 文本无关或时间不重叠 | 保留 |
+| 文本无关或时间不重叠            | 保留 |
 
 合并后保留更完整文本，并使用两段最早开始时间和最晚结束时间。
 
 ## 8. UI 行为
 
-| 功能 | 数据来源 |
-| --- | --- |
-| 临时字幕 | `caption.preview` |
-| 终稿字幕 | `caption.final` |
-| 处理耗时 | `processingMs` |
-| 识别状态 | `session.status` |
+| 功能     | 数据来源                           |
+| -------- | ---------------------------------- |
+| 临时字幕 | `caption.preview`                  |
+| 终稿字幕 | `caption.final`                    |
+| 处理耗时 | `processingMs`                     |
+| 识别状态 | `session.status`                   |
 | 错误状态 | `session.error` 或 `caption.error` |
 
 - 点击终稿字幕跳转到对应视频时间。
@@ -504,24 +504,24 @@ Panel 点击停止
 
 ## 10. 并发与故障边界
 
-| 工作 | 执行位置 | 阻塞关系 |
-| --- | --- | --- |
-| 音频重采样 | AudioWorklet | 不做模型推理 |
-| ASR 解码 | ASR Worker | 不阻塞 Panel 和 CT-Punc Worker |
-| CT-Punc | Caption Worker | 不阻塞 ASR Worker |
-| 字幕渲染 | Panel | 不执行模型推理 |
-| 窗口和标签页协调 | Background | 不执行模型推理 |
+| 工作             | 执行位置       | 阻塞关系                       |
+| ---------------- | -------------- | ------------------------------ |
+| 音频重采样       | AudioWorklet   | 不做模型推理                   |
+| ASR 解码         | ASR Worker     | 不阻塞 Panel 和 CT-Punc Worker |
+| CT-Punc          | Caption Worker | 不阻塞 ASR Worker              |
+| 字幕渲染         | Panel          | 不执行模型推理                 |
+| 窗口和标签页协调 | Background     | 不执行模型推理                 |
 
-| 故障 | 当前行为 |
-| --- | --- |
-| Silero VAD 模型加载失败 | 启动失败 |
-| ASR 模型加载失败 | 启动失败 |
-| ASR Worker 运行中崩溃 | 结束会话 |
-| Caption Worker 启动超时 | 原始字幕直接进入 UI |
-| CT-Punc 加载失败 | 警告后继续使用原始文本 |
-| CT-Punc 单次推理失败 | 当前文本保持原样 |
+| 故障                    | 当前行为                   |
+| ----------------------- | -------------------------- |
+| Silero VAD 模型加载失败 | 启动失败                   |
+| ASR 模型加载失败        | 启动失败                   |
+| ASR Worker 运行中崩溃   | 结束会话                   |
+| Caption Worker 启动超时 | 原始字幕直接进入 UI        |
+| CT-Punc 加载失败        | 警告后继续使用原始文本     |
+| CT-Punc 单次推理失败    | 当前文本保持原样           |
 | Chrome 消息服务暂不可用 | 隔离失败，单条事件可能丢失 |
-| 音频流结束 | 需要停止并重新启动 |
+| 音频流结束              | 需要停止并重新启动         |
 
 ## 11. 当前限制
 

@@ -1,16 +1,16 @@
 # 纯浏览器扩展中文字幕技术方案
 
-| 项目 | 内容 |
-| --- | --- |
-| 文档状态 | 全新目标架构，替代此前的本地服务方案 |
-| 产品形态 | 单个 Chrome Manifest V3 扩展 |
-| 核心技术路线 | Offscreen 采音 + AudioWorklet + Web Worker + WebAssembly |
-| 第一阶段输出 | 简体中文实时字幕 |
-| 后续扩展 | 非中文翻译为中文、多目标语言、字幕导出 |
-| 远程服务器 | 不需要 |
-| 本地辅助服务 | 不需要 |
-| 运行时网络依赖 | 无 |
-| 文档日期 | 2026-11-06 |
+| 项目           | 内容                                                     |
+| -------------- | -------------------------------------------------------- |
+| 文档状态       | 全新目标架构，替代此前的本地服务方案                     |
+| 产品形态       | 单个 Chrome Manifest V3 扩展                             |
+| 核心技术路线   | Offscreen 采音 + AudioWorklet + Web Worker + WebAssembly |
+| 第一阶段输出   | 简体中文实时字幕                                         |
+| 后续扩展       | 非中文翻译为中文、多目标语言、字幕导出                   |
+| 远程服务器     | 不需要                                                   |
+| 本地辅助服务   | 不需要                                                   |
+| 运行时网络依赖 | 无                                                       |
+| 文档日期       | 2026-11-06                                               |
 
 当前代码实际使用的模型、组件职责、并发关系和完整执行顺序见
 [当前运行架构与执行流程](current-runtime-architecture.md)。本文保留总体目标架构和验收设计。
@@ -71,21 +71,21 @@
 
 ### 2.2 第一阶段范围
 
-| 功能 | 第一阶段 |
-| --- | --- |
-| 捕获当前标签页音频 | 必须 |
-| 自动检测人声 | 必须 |
-| 中文流式识别 | 必须 |
-| 临时中文字幕 | 必须 |
-| 中文字幕终稿 | 必须 |
-| 字幕时间轴 | 必须 |
-| 点击字幕跳转视频 | 必须 |
-| 完全浏览器内运行 | 必须 |
-| Chrome 插件市场单包安装 | 必须 |
-| 非中文翻译为中文 | 后续 |
-| 多目标语言 | 后续 |
-| SRT/VTT 导出 | 后续 |
-| 语言自动检测 | 后续 |
+| 功能                    | 第一阶段 |
+| ----------------------- | -------- |
+| 捕获当前标签页音频      | 必须     |
+| 自动检测人声            | 必须     |
+| 中文流式识别            | 必须     |
+| 临时中文字幕            | 必须     |
+| 中文字幕终稿            | 必须     |
+| 字幕时间轴              | 必须     |
+| 点击字幕跳转视频        | 必须     |
+| 完全浏览器内运行        | 必须     |
+| Chrome 插件市场单包安装 | 必须     |
+| 非中文翻译为中文        | 后续     |
+| 多目标语言              | 后续     |
+| SRT/VTT 导出            | 后续     |
+| 语言自动检测            | 后续     |
 
 ### 2.3 非目标
 
@@ -104,14 +104,14 @@
 
 Chrome Web Store 对 Manifest V3 扩展有明确限制：
 
-| 约束 | 设计要求 |
-| --- | --- |
-| 禁止远程执行代码 | 所有 JS、WASM 和推理运行时必须随扩展打包 |
-| 不允许 CDN 加载可执行代码 | 禁止运行时从 CDN 下载 JS/WASM |
-| 权限需要最小化 | 优先使用 `activeTab` 和按需注入 |
-| 单用途政策 | 扩展用途聚焦为网页视频音频字幕 |
-| 隐私政策 | 明确音频不离开设备、不收集个人数据 |
-| 审核可解释性 | 权限、数据流和模型来源必须可说明 |
+| 约束                      | 设计要求                                 |
+| ------------------------- | ---------------------------------------- |
+| 禁止远程执行代码          | 所有 JS、WASM 和推理运行时必须随扩展打包 |
+| 不允许 CDN 加载可执行代码 | 禁止运行时从 CDN 下载 JS/WASM            |
+| 权限需要最小化            | 优先使用 `activeTab` 和按需注入          |
+| 单用途政策                | 扩展用途聚焦为网页视频音频字幕           |
+| 隐私政策                  | 明确音频不离开设备、不收集个人数据       |
+| 审核可解释性              | 权限、数据流和模型来源必须可说明         |
 
 模型权重必须在发布前决定：
 
@@ -122,28 +122,28 @@ Chrome Web Store 对 Manifest V3 扩展有明确限制：
 
 ### 3.2 浏览器能力约束
 
-| 能力 | 用途 | 约束 |
-| --- | --- | --- |
-| `tabCapture` | 获取标签页音频 | 必须由用户操作触发 |
-| Offscreen Document | 长期持有音频流 | 需要 `offscreen` 权限 |
-| AudioWorklet | 音频重采样和分帧 | 不适合做重计算 |
-| Web Worker | 模型推理 | 不阻塞 UI |
-| WebAssembly | ONNX 推理 | 需要 `wasm-unsafe-eval` CSP |
-| WebAssembly SIMD | 加速矩阵计算 | 目标设备需支持 |
-| SharedArrayBuffer | 多线程 WASM | 需要跨源隔离，作为增强项 |
-| WebGPU | 后续翻译或更大模型 | 不假设所有设备可用 |
+| 能力               | 用途               | 约束                        |
+| ------------------ | ------------------ | --------------------------- |
+| `tabCapture`       | 获取标签页音频     | 必须由用户操作触发          |
+| Offscreen Document | 长期持有音频流     | 需要 `offscreen` 权限       |
+| AudioWorklet       | 音频重采样和分帧   | 不适合做重计算              |
+| Web Worker         | 模型推理           | 不阻塞 UI                   |
+| WebAssembly        | ONNX 推理          | 需要 `wasm-unsafe-eval` CSP |
+| WebAssembly SIMD   | 加速矩阵计算       | 目标设备需支持              |
+| SharedArrayBuffer  | 多线程 WASM        | 需要跨源隔离，作为增强项    |
+| WebGPU             | 后续翻译或更大模型 | 不假设所有设备可用          |
 
 ### 3.3 模型体积约束
 
 当前使用 Silero VAD、中英双语流式 ASR 模型和 CT-Punc 标点恢复模型。
 
-| 资源 | 策略 |
-| --- | --- |
-| 模型目录 | 随构建产物复制到 `dist/runtime` |
+| 资源     | 策略                                  |
+| -------- | ------------------------------------- |
+| 模型目录 | 随构建产物复制到 `dist/runtime`       |
 | 模型格式 | 仅保留必要的 VAD、ASR、标点模型和词表 |
-| 浮点模型 | 仅 Silero VAD 等当前实现必需模型 |
-| 模型缓存 | 运行时从扩展资源加载到内存 |
-| 模型更新 | 随扩展版本发布 |
+| 浮点模型 | 仅 Silero VAD 等当前实现必需模型      |
+| 模型缓存 | 运行时从扩展资源加载到内存            |
+| 模型更新 | 随扩展版本发布                        |
 
 建议首版扩展包预算：
 
@@ -186,14 +186,14 @@ flowchart TB
 
 ### 4.1 线程和进程边界
 
-| 执行上下文 | 生命周期 | 主要职责 |
-| --- | --- | --- |
-| Popup Panel | 用户关闭前 | UI、字幕渲染和设置 |
-| Service Worker | 可随时休眠 | 标签页、权限和消息协调 |
-| Offscreen Document | 音频会话期间 | 持有 MediaStream、音频管线、会话状态 |
-| AudioWorklet | 音频上下文期间 | 低延迟 PCM 转换 |
-| ASR Worker | 识别会话期间 | 模型加载、VAD 和原始识别 |
-| Caption Worker | 识别会话期间 | 分句、标点恢复和 UI 字幕事件，不参与音频识别 |
+| 执行上下文         | 生命周期       | 主要职责                                     |
+| ------------------ | -------------- | -------------------------------------------- |
+| Popup Panel        | 用户关闭前     | UI、字幕渲染和设置                           |
+| Service Worker     | 可随时休眠     | 标签页、权限和消息协调                       |
+| Offscreen Document | 音频会话期间   | 持有 MediaStream、音频管线、会话状态         |
+| AudioWorklet       | 音频上下文期间 | 低延迟 PCM 转换                              |
+| ASR Worker         | 识别会话期间   | 模型加载、VAD 和原始识别                     |
+| Caption Worker     | 识别会话期间   | 分句、标点恢复和 UI 字幕事件，不参与音频识别 |
 
 推理不能放在 Service Worker 中，因为 MV3 Service Worker 会休眠，且不适合长时间 CPU 计算。
 
@@ -210,14 +210,14 @@ ASR 与字幕后处理分别运行在 Offscreen 创建的两个独立 Web Worker
 
 Popup Panel 是独立于网页的扩展弹窗，是字幕产品的主界面。
 
-| 模块 | 职责 |
-| --- | --- |
-| 会话控制 | 启动、停止、重新开始 |
-| 状态展示 | 模型加载、识别中、错误、性能 |
-| 字幕列表 | 临时字幕、终稿字幕、点击跳转 |
-| 设置 | 模型档位、低延迟/准确偏好、字幕字号 |
-| 隐私说明 | 音频仅在本机浏览器中处理 |
-| 窗口操作 | 使用 Chrome 原生标题栏关闭窗口 |
+| 模块     | 职责                                |
+| -------- | ----------------------------------- |
+| 会话控制 | 启动、停止、重新开始                |
+| 状态展示 | 模型加载、识别中、错误、性能        |
+| 字幕列表 | 临时字幕、终稿字幕、点击跳转        |
+| 设置     | 模型档位、低延迟/准确偏好、字幕字号 |
+| 隐私说明 | 音频仅在本机浏览器中处理            |
+| 窗口操作 | 使用 Chrome 原生标题栏关闭窗口      |
 
 使用 `chrome.windows.create({ type: "popup" })` 创建独立窗口，不提供置顶模式。
 
@@ -225,26 +225,26 @@ Popup Panel 是独立于网页的扩展弹窗，是字幕产品的主界面。
 
 ### 5.2 Background Service Worker
 
-| 职责 | 说明 |
-| --- | --- |
-| 来源标签页 | 获取用户当前操作的标签页 |
-| 音频授权 | 调用 `tabCapture.getMediaStreamId` |
-| 页面能力 | 按需注入读取视频和跳转脚本 |
-| Offscreen 生命周期 | 创建或复用 Offscreen Document |
-| 消息路由 | 在 Popup Panel 和 Offscreen 之间转发 |
+| 职责               | 说明                                 |
+| ------------------ | ------------------------------------ |
+| 来源标签页         | 获取用户当前操作的标签页             |
+| 音频授权           | 调用 `tabCapture.getMediaStreamId`   |
+| 页面能力           | 按需注入读取视频和跳转脚本           |
+| Offscreen 生命周期 | 创建或复用 Offscreen Document        |
+| 消息路由           | 在 Popup Panel 和 Offscreen 之间转发 |
 
 Service Worker 只保存轻量会话元数据，不保存完整音频或大量字幕。
 
 ### 5.3 Offscreen Document
 
-| 职责 | 说明 |
-| --- | --- |
-| 建立音频流 | 使用 Stream ID 调用 `getUserMedia` |
-| 保持视频声音 | 将捕获流重新连接到音频输出 |
-| 建立 Worklet | 加载扩展内置 AudioWorklet |
-| 创建 ASR Worker | 每个会话创建一个推理 Worker |
-| 管理会话状态 | 分配 sessionId 和 segmentId |
-| 收尾 | 停止轨道、关闭 AudioContext、终止 Worker |
+| 职责            | 说明                                     |
+| --------------- | ---------------------------------------- |
+| 建立音频流      | 使用 Stream ID 调用 `getUserMedia`       |
+| 保持视频声音    | 将捕获流重新连接到音频输出               |
+| 建立 Worklet    | 加载扩展内置 AudioWorklet                |
+| 创建 ASR Worker | 每个会话创建一个推理 Worker              |
+| 管理会话状态    | 分配 sessionId 和 segmentId              |
+| 收尾            | 停止轨道、关闭 AudioContext、终止 Worker |
 
 Offscreen Document 必须同时声明：
 
@@ -259,42 +259,42 @@ AUDIO_PLAYBACK
 
 AudioWorklet 只处理音频格式，不进行语音识别。
 
-| 项目 | 设计 |
-| --- | --- |
-| 输入 | 标签页音频，常见为 44.1 或 48 kHz |
-| 声道 | 混合为单声道 |
-| 输出采样率 | 16 kHz |
-| 输出格式 | PCM signed 16-bit little-endian |
-| 帧长 | 20 ms，即 320 samples |
-| 传输 | `postMessage` + Transferable ArrayBuffer |
+| 项目       | 设计                                     |
+| ---------- | ---------------------------------------- |
+| 输入       | 标签页音频，常见为 44.1 或 48 kHz        |
+| 声道       | 混合为单声道                             |
+| 输出采样率 | 16 kHz                                   |
+| 输出格式   | PCM signed 16-bit little-endian          |
+| 帧长       | 20 ms，即 320 samples                    |
+| 传输       | `postMessage` + Transferable ArrayBuffer |
 
 音频帧不得序列化为 JSON。
 
 ### 5.5 ASR Web Worker
 
-| 职责 | 说明 |
-| --- | --- |
-| WASM 初始化 | 从扩展资源加载本地 WASM 运行时 |
-| 模型加载 | 读取 tokens 和 int8 ONNX 文件 |
-| VAD | 使用 Silero VAD v5 的人声概率切分语音段 |
-| 流式识别 | 对当前语音段持续解码 |
-| 原始临时结果 | 按节流间隔输出未分句文本 |
-| 原始终稿 | 在语音结束时输出未分句文本 |
-| 资源释放 | 会话停止后释放模型和会话内存 |
+| 职责         | 说明                                    |
+| ------------ | --------------------------------------- |
+| WASM 初始化  | 从扩展资源加载本地 WASM 运行时          |
+| 模型加载     | 读取 tokens 和 int8 ONNX 文件           |
+| VAD          | 使用 Silero VAD v5 的人声概率切分语音段 |
+| 流式识别     | 对当前语音段持续解码                    |
+| 原始临时结果 | 按节流间隔输出未分句文本                |
+| 原始终稿     | 在语音结束时输出未分句文本              |
+| 资源释放     | 会话停止后释放模型和会话内存            |
 
 ### 5.6 Caption Web Worker
 
-| 职责 | 说明 |
-| --- | --- |
-| 输入 | ASR Worker 输出的原始临时和终稿文本 |
-| 独立启动 | 与采音建立并行初始化，不阻塞 ASR 就绪后的音频采集 |
-| 流式分句 | 对临时文本生成稳定前缀和可变尾句 |
-| CT-Punc | 使用 ONNX Runtime Web 为实时预览和终稿恢复标点 |
-| 模型边界 | 根据 CT-Punc 输出的句末和句中标点决定字幕切分位置 |
-| 宽度兜底 | 模型没有给出可用边界时，才按目标长度和最大长度切分 |
-| 实时合并 | 模型推理期间只保留最新待处理预览，避免旧预览排队造成延迟 |
+| 职责     | 说明                                                                |
+| -------- | ------------------------------------------------------------------- |
+| 输入     | ASR Worker 输出的原始临时和终稿文本                                 |
+| 独立启动 | 与采音建立并行初始化，不阻塞 ASR 就绪后的音频采集                   |
+| 流式分句 | 对临时文本生成稳定前缀和可变尾句                                    |
+| CT-Punc  | 使用 ONNX Runtime Web 为实时预览和终稿恢复标点                      |
+| 模型边界 | 根据 CT-Punc 输出的句末和句中标点决定字幕切分位置                   |
+| 宽度兜底 | 模型没有给出可用边界时，才按目标长度和最大长度切分                  |
+| 实时合并 | 模型推理期间只保留最新待处理预览，避免旧预览排队造成延迟            |
 | 原始透传 | 后处理未就绪或不可用时，Offscreen 直接把原始 ASR 结果转换为 UI 字幕 |
-| 故障隔离 | 后处理异常不会停止、回滚或重复调用 ASR Worker |
+| 故障隔离 | 后处理异常不会停止、回滚或重复调用 ASR Worker                       |
 
 模型和 WASM 只从 `chrome-extension://` 自身资源加载。
 
@@ -303,24 +303,17 @@ AudioWorklet 只处理音频格式，不进行语音识别。
 ### 6.1 推荐权限
 
 ```json
-[
-  "activeTab",
-  "offscreen",
-  "scripting",
-  "storage",
-  "tabCapture",
-  "tabs"
-]
+["activeTab", "offscreen", "scripting", "storage", "tabCapture", "tabs"]
 ```
 
-| 权限 | 必要性 |
-| --- | --- |
-| `activeTab` | 用户点击扩展后访问当前视频页 |
-| `offscreen` | 在后台持有音频流 |
-| `scripting` | 按需注入视频状态和跳转脚本 |
-| `storage` | 在浏览器会话内保存弹窗窗口 ID 和会话状态 |
-| `tabCapture` | 捕获标签页音频 |
-| `tabs` | 获取当前标签页 ID |
+| 权限         | 必要性                                   |
+| ------------ | ---------------------------------------- |
+| `activeTab`  | 用户点击扩展后访问当前视频页             |
+| `offscreen`  | 在后台持有音频流                         |
+| `scripting`  | 按需注入视频状态和跳转脚本               |
+| `storage`    | 在浏览器会话内保存弹窗窗口 ID 和会话状态 |
+| `tabCapture` | 捕获标签页音频                           |
+| `tabs`       | 获取当前标签页 ID                        |
 
 ### 6.2 不推荐 `<all_urls>` 常驻内容脚本
 
@@ -360,16 +353,16 @@ worker-src 'self';
 
 ### 7.1 第一阶段模型
 
-| 项目 | 内容 |
-| --- | --- |
-| ASR 模型 | `sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20` |
-| VAD 模型 | Silero VAD v5 |
+| 项目     | 内容                                                                 |
+| -------- | -------------------------------------------------------------------- |
+| ASR 模型 | `sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20`         |
+| VAD 模型 | Silero VAD v5                                                        |
 | 标点模型 | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
-| VAD 推理 | ONNX Runtime Web，CPU WASM |
-| ASR 推理 | Sherpa-ONNX WebAssembly SIMD |
-| 标点推理 | ONNX Runtime Web，CPU WASM |
-| 标点类别 | 无标点、逗号、句号、问号、顿号 |
-| 许可 | Silero VAD MIT；ASR/CT-Punc Apache-2.0；ONNX Runtime MIT |
+| VAD 推理 | ONNX Runtime Web，CPU WASM                                           |
+| ASR 推理 | Sherpa-ONNX WebAssembly SIMD                                         |
+| 标点推理 | ONNX Runtime Web，CPU WASM                                           |
+| 标点类别 | 无标点、逗号、句号、问号、顿号                                       |
+| 许可     | Silero VAD MIT；ASR/CT-Punc Apache-2.0；ONNX Runtime MIT             |
 
 ASR 使用 Sherpa-ONNX 官方预编译包，包含：
 
@@ -423,12 +416,12 @@ dist/runtime/ct-punc/
 
 ### 7.3 单线程和多线程
 
-| 模式 | 优点 | 缺点 | 首版 |
-| --- | --- | --- | --- |
-| 单线程 WASM | 兼容性高 | 大模型推理较慢 | 默认 |
-| SIMD 单线程 | 明显加速矩阵计算 | 仍需设备支持 SIMD | 优先 |
-| 多线程 WASM | 可使用多核 | 需要 SharedArrayBuffer 和跨源隔离 | 实验增强 |
-| WebGPU | 理论上更高吞吐 | 模型支持、显存和兼容性不确定 | 后续评估 |
+| 模式        | 优点             | 缺点                              | 首版     |
+| ----------- | ---------------- | --------------------------------- | -------- |
+| 单线程 WASM | 兼容性高         | 大模型推理较慢                    | 默认     |
+| SIMD 单线程 | 明显加速矩阵计算 | 仍需设备支持 SIMD                 | 优先     |
+| 多线程 WASM | 可使用多核       | 需要 SharedArrayBuffer 和跨源隔离 | 实验增强 |
+| WebGPU      | 理论上更高吞吐   | 模型支持、显存和兼容性不确定      | 后续评估 |
 
 首版应优先使用单线程 SIMD，避免因跨源隔离失败导致扩展不可用。
 
@@ -453,21 +446,21 @@ dist/runtime/ct-punc/
 
 ### 8.1 启动
 
-| 步骤 | 组件 | 操作 |
-| --- | --- | --- |
-| 1 | Popup Panel | 用户点击启动 |
-| 2 | Background | 获取当前标签页 ID |
-| 3 | Background | 注入视频检测脚本 |
-| 4 | Background | 确认页面存在 `<video>` |
-| 5 | Background | 申请 tabCapture Stream ID |
-| 6 | Background | 创建 Offscreen Document |
-| 7 | Offscreen | 创建 ASR Worker |
-| 8 | ASR Worker | 初始化 runtime 和模型 |
-| 9 | ASR Worker | 返回 `worker.ready` |
-| 10 | Offscreen | 后台启动 Caption Worker，并并行建立 MediaStream |
-| 11 | Offscreen | 建立 AudioContext 和 AudioWorklet |
-| 12 | Offscreen | 连接播放监听和 ASR 采集分支 |
-| 13 | Popup Panel | 收到 `session.started` |
+| 步骤 | 组件        | 操作                                            |
+| ---- | ----------- | ----------------------------------------------- |
+| 1    | Popup Panel | 用户点击启动                                    |
+| 2    | Background  | 获取当前标签页 ID                               |
+| 3    | Background  | 注入视频检测脚本                                |
+| 4    | Background  | 确认页面存在 `<video>`                          |
+| 5    | Background  | 申请 tabCapture Stream ID                       |
+| 6    | Background  | 创建 Offscreen Document                         |
+| 7    | Offscreen   | 创建 ASR Worker                                 |
+| 8    | ASR Worker  | 初始化 runtime 和模型                           |
+| 9    | ASR Worker  | 返回 `worker.ready`                             |
+| 10   | Offscreen   | 后台启动 Caption Worker，并并行建立 MediaStream |
+| 11   | Offscreen   | 建立 AudioContext 和 AudioWorklet               |
+| 12   | Offscreen   | 连接播放监听和 ASR 采集分支                     |
+| 13   | Popup Panel | 收到 `session.started`                          |
 
 Caption Worker 的 `caption.ready` 不是采音前置条件。其初始化期间产生的原始字幕由
 Offscreen 直接转换为 `caption.preview` 或 `caption.final`，不会暂停或阻塞识别。
@@ -486,13 +479,13 @@ MediaStreamSource
 
 ### 8.3 音频转换
 
-| 环节 | 输出 |
-| --- | --- |
-| 多声道混合 | 单声道 Float32 |
-| 重采样 | 16 kHz Float32 |
-| 量化 | Int16 PCM |
-| 分帧 | 每帧 320 samples |
-| 时间戳 | 以会话开始为 0 的单调时间 |
+| 环节       | 输出                      |
+| ---------- | ------------------------- |
+| 多声道混合 | 单声道 Float32            |
+| 重采样     | 16 kHz Float32            |
+| 量化       | Int16 PCM                 |
+| 分帧       | 每帧 320 samples          |
+| 时间戳     | 以会话开始为 0 的单调时间 |
 
 ## 9. 内部消息协议
 
@@ -502,21 +495,21 @@ MediaStreamSource
 
 ```typescript
 type StartPanelSession = {
-  type: 'panel.start';
+  type: "panel.start";
   sourceTabId: number;
 };
 
 type CaptureStart = {
-  type: 'capture.start';
+  type: "capture.start";
   streamId: string;
 };
 
 type CaptureSeek = {
-  type: 'capture.seek';
+  type: "capture.seek";
 };
 
 type AsrStart = {
-  type: 'asr.start';
+  type: "asr.start";
   sessionId: string;
 };
 ```
@@ -527,7 +520,7 @@ Worker 通过 `MessagePort` 接收：
 
 ```typescript
 type AudioFrame = {
-  type: 'audio.frame';
+  type: "audio.frame";
   samples: ArrayBuffer;
 };
 ```
@@ -538,7 +531,7 @@ type AudioFrame = {
 
 ```typescript
 type CaptionPreviewEvent = {
-  type: 'caption.preview';
+  type: "caption.preview";
   sessionId: string;
   parentSegmentId: string;
   parts: Array<{
@@ -552,7 +545,7 @@ type CaptionPreviewEvent = {
 };
 
 type FinalCaptionEvent = {
-  type: 'caption.final';
+  type: "caption.final";
   sessionId: string;
   segmentId: string;
   parentSegmentId: string;
@@ -589,15 +582,15 @@ idle
   -> idle
 ```
 
-| 状态 | 用户操作 | 系统行为 |
-| --- | --- | --- |
-| `idle` | 启动 | 获取标签页 |
-| `requesting-tab` | 取消 | 检查视频 |
-| `requesting-capture` | 取消 | 申请音频 ID |
-| `loading-model` | 停止 | 加载 ONNX |
-| `running` | 停止 | 接收 PCM |
-| `draining` | 等待 | 完成尾段 |
-| `idle` | 启动或导出 | 释放资源 |
+| 状态                 | 用户操作   | 系统行为    |
+| -------------------- | ---------- | ----------- |
+| `idle`               | 启动       | 获取标签页  |
+| `requesting-tab`     | 取消       | 检查视频    |
+| `requesting-capture` | 取消       | 申请音频 ID |
+| `loading-model`      | 停止       | 加载 ONNX   |
+| `running`            | 停止       | 接收 PCM    |
+| `draining`           | 等待       | 完成尾段    |
+| `idle`               | 启动或导出 | 释放资源    |
 
 ### 10.2 推理 Worker
 
@@ -618,16 +611,16 @@ uninitialized
 
 当前采用 Silero VAD v5，在浏览器内输出每个音频块的人声概率：
 
-| 参数 | 默认值 |
-| --- | ---: |
-| VAD 音频块 | 32 ms，512 samples |
-| 人声概率开始阈值 | 0.5 |
-| 人声概率结束阈值 | 0.35 |
-| 连续语音启动 | 2 个 VAD 块，64 ms |
-| 前置缓冲 | 300 ms |
-| 结束静音 | 650 ms |
-| 最长语音段 | 12 秒 |
-| 临时结果间隔 | 250 ms |
+| 参数             |             默认值 |
+| ---------------- | -----------------: |
+| VAD 音频块       | 32 ms，512 samples |
+| 人声概率开始阈值 |                0.5 |
+| 人声概率结束阈值 |               0.35 |
+| 连续语音启动     | 2 个 VAD 块，64 ms |
+| 前置缓冲         |             300 ms |
+| 结束静音         |             650 ms |
+| 最长语音段       |              12 秒 |
+| 临时结果间隔     |             250 ms |
 
 所有参数必须集中在一个不可变配置对象中，不散落在业务代码里。
 
@@ -741,13 +734,13 @@ videoTimeMs = anchorVideoTimeMs
 
 ### 13.3 暂停和拖动
 
-| 事件 | 行为 |
-| --- | --- |
-| 视频暂停 | 音频继续为静音，校准 offset |
-| 视频继续 | 重新使用当前视频时间校准 |
-| 用户拖动 | 立即重算 offset |
-| 切换标签页 | 没有 activeTab 权限时提示重新点击扩展 |
-| 视频元素替换 | 重新注入检测脚本并恢复适配 |
+| 事件         | 行为                                  |
+| ------------ | ------------------------------------- |
+| 视频暂停     | 音频继续为静音，校准 offset           |
+| 视频继续     | 重新使用当前视频时间校准              |
+| 用户拖动     | 立即重算 offset                       |
+| 切换标签页   | 没有 activeTab 权限时提示重新点击扩展 |
+| 视频元素替换 | 重新注入检测脚本并恢复适配            |
 
 ## 14. 字幕 UI
 
@@ -772,16 +765,16 @@ videoTimeMs = anchorVideoTimeMs
 
 ### 14.2 状态类型
 
-| 状态 | 文案 |
-| --- | --- |
-| 无视频 | 当前标签页未检测到视频 |
-| 加载运行时 | 正在加载本地识别引擎 |
-| 加载模型 | 正在加载中文模型 |
-| 运行中 | 实时字幕识别中 |
-| 收尾 | 正在生成最后一段字幕 |
-| 模型错误 | 中文模型损坏或加载失败 |
-| 内存不足 | 当前设备内存不足 |
-| 不支持 | 浏览器不支持所需 WASM 能力 |
+| 状态       | 文案                       |
+| ---------- | -------------------------- |
+| 无视频     | 当前标签页未检测到视频     |
+| 加载运行时 | 正在加载本地识别引擎       |
+| 加载模型   | 正在加载中文模型           |
+| 运行中     | 实时字幕识别中             |
+| 收尾       | 正在生成最后一段字幕       |
+| 模型错误   | 中文模型损坏或加载失败     |
+| 内存不足   | 当前设备内存不足           |
+| 不支持     | 浏览器不支持所需 WASM 能力 |
 
 ### 14.3 交互
 
@@ -796,14 +789,14 @@ videoTimeMs = anchorVideoTimeMs
 
 ## 15. 数据存储
 
-| 数据 | 存储 | 生命周期 |
-| --- | --- | --- |
-| 模型和 WASM | 扩展包 | 随版本更新 |
-| 用户设置 | `chrome.storage.local` | 持久 |
-| 当前字幕 | Offscreen 内存 | 会话期间 |
-| 字幕历史 | 默认不保存 | 关闭后清空 |
-| 音频 | 内存环形缓冲 | 最长数秒 |
-| 模型缓存 | 浏览器进程内存 | Worker 生命周期 |
+| 数据        | 存储                   | 生命周期        |
+| ----------- | ---------------------- | --------------- |
+| 模型和 WASM | 扩展包                 | 随版本更新      |
+| 用户设置    | `chrome.storage.local` | 持久            |
+| 当前字幕    | Offscreen 内存         | 会话期间        |
+| 字幕历史    | 默认不保存             | 关闭后清空      |
+| 音频        | 内存环形缓冲           | 最长数秒        |
+| 模型缓存    | 浏览器进程内存         | Worker 生命周期 |
 
 不得使用 IndexedDB 存储原始音频。
 
@@ -831,19 +824,19 @@ Chrome 或 Edge 最新稳定版
 
 ### 16.2 性能目标
 
-| 指标 | 目标 |
-| --- | --- |
-| 扩展启动 | < 300 ms |
-| WASM 加载 | < 1.5 s |
-| Silero VAD 模型加载 | < 1 s |
-| ASR 模型加载 | < 3 s |
-| CT-Punc 模型加载 | < 5 s |
-| 首条临时字幕 P95 | < 1.5 s |
-| 临时字幕更新 | 250～600 ms |
-| 终稿生成 | 语音结束后 < 1.5 s |
-| 实时率 RTF P95 | < 0.8 |
-| 会话内存峰值 | < 800 MB |
-| 连续运行 | 2 小时无持续内存增长 |
+| 指标                | 目标                 |
+| ------------------- | -------------------- |
+| 扩展启动            | < 300 ms             |
+| WASM 加载           | < 1.5 s              |
+| Silero VAD 模型加载 | < 1 s                |
+| ASR 模型加载        | < 3 s                |
+| CT-Punc 模型加载    | < 5 s                |
+| 首条临时字幕 P95    | < 1.5 s              |
+| 临时字幕更新        | 250～600 ms          |
+| 终稿生成            | 语音结束后 < 1.5 s   |
+| 实时率 RTF P95      | < 0.8                |
+| 会话内存峰值        | < 800 MB             |
+| 连续运行            | 2 小时无持续内存增长 |
 
 ### 16.3 降级策略
 
@@ -859,15 +852,15 @@ Chrome 或 Edge 最新稳定版
 
 ## 17. 内存与资源管理
 
-| 资源 | 生命周期 |
-| --- | --- |
-| MediaStream | 会话开始到停止 |
-| AudioContext | 会话开始到停止 |
+| 资源         | 生命周期              |
+| ------------ | --------------------- |
+| MediaStream  | 会话开始到停止        |
+| AudioContext | 会话开始到停止        |
 | AudioWorklet | AudioContext 生命周期 |
-| ASR Worker | 模型加载到会话停止 |
-| WASM 实例 | Worker 生命周期 |
-| 模型数据 | Worker 生命周期 |
-| 音频块 | 发送后立即释放 |
+| ASR Worker   | 模型加载到会话停止    |
+| WASM 实例    | Worker 生命周期       |
+| 模型数据     | Worker 生命周期       |
+| 音频块       | 发送后立即释放        |
 
 停止会话必须按顺序执行：
 
@@ -883,20 +876,20 @@ Chrome 或 Edge 最新稳定版
 
 ## 18. 错误处理
 
-| 错误 | 原因 | 处理 |
-| --- | --- | --- |
-| `NO_ACTIVE_TAB` | 没有活动标签页 | 提示点击扩展后重试 |
-| `NO_VIDEO` | 页面没有 `<video>` | 提示打开视频 |
-| `CAPTURE_DENIED` | 用户或浏览器拒绝捕获 | 显示权限提示 |
-| `WASM_UNSUPPORTED` | 浏览器不支持 | 说明浏览器要求 |
-| `SIMD_UNSUPPORTED` | SIMD 不可用 | 尝试兼容构建 |
-| `RUNTIME_LOAD_FAILED` | 运行时损坏 | 提示重新安装扩展 |
-| `MODEL_LOAD_FAILED` | 模型缺失或损坏 | 显示模型错误 |
-| `MODEL_HASH_MISMATCH` | 打包文件被篡改 | 终止会话 |
-| `OUT_OF_MEMORY` | 模型或音频缓冲过大 | 清理会话并提示 |
-| `WORKER_CRASHED` | 推理进程异常 | 停止会话，允许重试 |
-| `AUDIO_TRACK_ENDED` | 标签页音频结束 | 自动收尾 |
-| `VIDEO_NAVIGATED` | 页面跳转 | 停止会话并重新检测 |
+| 错误                  | 原因                 | 处理               |
+| --------------------- | -------------------- | ------------------ |
+| `NO_ACTIVE_TAB`       | 没有活动标签页       | 提示点击扩展后重试 |
+| `NO_VIDEO`            | 页面没有 `<video>`   | 提示打开视频       |
+| `CAPTURE_DENIED`      | 用户或浏览器拒绝捕获 | 显示权限提示       |
+| `WASM_UNSUPPORTED`    | 浏览器不支持         | 说明浏览器要求     |
+| `SIMD_UNSUPPORTED`    | SIMD 不可用          | 尝试兼容构建       |
+| `RUNTIME_LOAD_FAILED` | 运行时损坏           | 提示重新安装扩展   |
+| `MODEL_LOAD_FAILED`   | 模型缺失或损坏       | 显示模型错误       |
+| `MODEL_HASH_MISMATCH` | 打包文件被篡改       | 终止会话           |
+| `OUT_OF_MEMORY`       | 模型或音频缓冲过大   | 清理会话并提示     |
+| `WORKER_CRASHED`      | 推理进程异常         | 停止会话，允许重试 |
+| `AUDIO_TRACK_ENDED`   | 标签页音频结束       | 自动收尾           |
+| `VIDEO_NAVIGATED`     | 页面跳转             | 停止会话并重新检测 |
 
 错误必须包含稳定错误码，UI 文案与错误码分离。
 
@@ -951,25 +944,25 @@ LICENSES/*
 
 ### 20.2 商店资料
 
-| 项目 | 内容 |
-| --- | --- |
-| 单一用途 | 网页视频音频识别和中文字幕 |
-| 权限说明 | 解释 `tabCapture`、`offscreen`、`activeTab` |
-| 隐私政策 | 本地处理、无数据收集 |
-| 数据使用声明 | 不收集、不出售、不共享 |
-| 模型来源 | 开源模型与许可证 |
-| 最低浏览器 | 支持 WASM SIMD 的 Chromium 版本 |
+| 项目         | 内容                                        |
+| ------------ | ------------------------------------------- |
+| 单一用途     | 网页视频音频识别和中文字幕                  |
+| 权限说明     | 解释 `tabCapture`、`offscreen`、`activeTab` |
+| 隐私政策     | 本地处理、无数据收集                        |
+| 数据使用声明 | 不收集、不出售、不共享                      |
+| 模型来源     | 开源模型与许可证                            |
+| 最低浏览器   | 支持 WASM SIMD 的 Chromium 版本             |
 
 ### 20.3 审核风险
 
-| 风险 | 控制 |
-| --- | --- |
-| 远程代码 | 所有运行时和模型打包 |
-| 过宽权限 | 使用 activeTab 按需注入 |
+| 风险         | 控制                       |
+| ------------ | -------------------------- |
+| 远程代码     | 所有运行时和模型打包       |
+| 过宽权限     | 使用 activeTab 按需注入    |
 | 音频权限敏感 | 明确用户主动触发和本地处理 |
-| 包体过大 | 只打包 int8 模型 |
-| 模型许可证 | 保留模型和运行时许可证 |
-| 第三方库漏洞 | 锁定版本并执行依赖审计 |
+| 包体过大     | 只打包 int8 模型           |
+| 模型许可证   | 保留模型和运行时许可证     |
+| 第三方库漏洞 | 锁定版本并执行依赖审计     |
 
 ## 21. 测试方案
 
@@ -1035,60 +1028,60 @@ LICENSES/*
 
 ### 阶段 1：纯扩展骨架
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 无服务化 |
-| 内容 | 删除 Python、WebSocket 和本地服务依赖 |
-| 交付 | Background、Offscreen、Popup Panel、权限 |
-| 完成标准 | 能从扩展打开独立弹窗并检测视频 |
+| 项目     | 交付                                     |
+| -------- | ---------------------------------------- |
+| 目标     | 无服务化                                 |
+| 内容     | 删除 Python、WebSocket 和本地服务依赖    |
+| 交付     | Background、Offscreen、Popup Panel、权限 |
+| 完成标准 | 能从扩展打开独立弹窗并检测视频           |
 
 ### 阶段 2：音频捕获
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 获得稳定 PCM |
-| 内容 | tabCapture、播放监听、AudioWorklet、Transferable |
-| 完成标准 | 16 kHz PCM 连续输出，视频原声可听 |
+| 项目     | 交付                                             |
+| -------- | ------------------------------------------------ |
+| 目标     | 获得稳定 PCM                                     |
+| 内容     | tabCapture、播放监听、AudioWorklet、Transferable |
+| 完成标准 | 16 kHz PCM 连续输出，视频原声可听                |
 
 ### 阶段 3：浏览器内中文 ASR
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 不依赖服务器 |
-| 内容 | ASR Worker、WASM、int8 中文模型 |
-| 完成标准 | 真实音频产生中文临时字幕 |
+| 项目     | 交付                            |
+| -------- | ------------------------------- |
+| 目标     | 不依赖服务器                    |
+| 内容     | ASR Worker、WASM、int8 中文模型 |
+| 完成标准 | 真实音频产生中文临时字幕        |
 
 ### 阶段 4：VAD 和字幕终稿
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 正确切分和稳定字幕 |
-| 内容 | Silero VAD、CT-Punc 实时与终稿标点、模型标点驱动分句 |
-| 完成标准 | 静音不字幕，终稿具有模型恢复的中文标点 |
+| 项目     | 交付                                                 |
+| -------- | ---------------------------------------------------- |
+| 目标     | 正确切分和稳定字幕                                   |
+| 内容     | Silero VAD、CT-Punc 实时与终稿标点、模型标点驱动分句 |
+| 完成标准 | 静音不字幕，终稿具有模型恢复的中文标点               |
 
 ### 阶段 5：UI 和时间轴
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 可交付使用 |
-| 内容 | 字幕列表、状态、错误、视频跳转 |
-| 完成标准 | 完整字幕观看链路可用 |
+| 项目     | 交付                           |
+| -------- | ------------------------------ |
+| 目标     | 可交付使用                     |
+| 内容     | 字幕列表、状态、错误、视频跳转 |
+| 完成标准 | 完整字幕观看链路可用           |
 
 ### 阶段 6：性能与稳定性
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 达到上架标准 |
-| 内容 | 资源释放、内存测试、RTF、SIMD 兼容 |
-| 完成标准 | 2 小时稳定运行，不持续增长 |
+| 项目     | 交付                               |
+| -------- | ---------------------------------- |
+| 目标     | 达到上架标准                       |
+| 内容     | 资源释放、内存测试、RTF、SIMD 兼容 |
+| 完成标准 | 2 小时稳定运行，不持续增长         |
 
 ### 阶段 7：Chrome Web Store 打包
 
-| 项目 | 交付 |
-| --- | --- |
-| 目标 | 可提交审核 |
-| 内容 | release ZIP、许可证、隐私说明、权限说明 |
-| 完成标准 | 包内无远程代码，无未声明依赖 |
+| 项目     | 交付                                    |
+| -------- | --------------------------------------- |
+| 目标     | 可提交审核                              |
+| 内容     | release ZIP、许可证、隐私说明、权限说明 |
+| 完成标准 | 包内无远程代码，无未声明依赖            |
 
 ## 24. 后续多语言设计
 
@@ -1120,31 +1113,31 @@ ASR Worker
 
 ## 25. 风险与决策
 
-| 风险 | 决策 |
-| --- | --- |
+| 风险           | 决策                                 |
+| -------------- | ------------------------------------ |
 | 浏览器性能不足 | 使用 14M int8 流式模型，提供性能告警 |
-| 模型体积大 | 只打包 int8 和必要 token |
-| 多线程兼容性 | 首版使用 SIMD 单线程 |
-| WebGPU 兼容性 | 不作为首版必需能力 |
-| 权限审核 | 使用 activeTab 按需注入 |
-| 远程代码审核 | 所有 JS/WASM 随扩展打包 |
-| 模型许可证 | 随包提供 LICENSE |
-| 大模型准确率 | 后续通过独立终稿模型解决 |
-| iframe 视频 | 首版明确为不支持或后续按站点适配 |
-| 跨平台差异 | 首版只承诺 Chrome/Edge 桌面版 |
+| 模型体积大     | 只打包 int8 和必要 token             |
+| 多线程兼容性   | 首版使用 SIMD 单线程                 |
+| WebGPU 兼容性  | 不作为首版必需能力                   |
+| 权限审核       | 使用 activeTab 按需注入              |
+| 远程代码审核   | 所有 JS/WASM 随扩展打包              |
+| 模型许可证     | 随包提供 LICENSE                     |
+| 大模型准确率   | 后续通过独立终稿模型解决             |
+| iframe 视频    | 首版明确为不支持或后续按站点适配     |
+| 跨平台差异     | 首版只承诺 Chrome/Edge 桌面版        |
 
 ## 26. 最终方案摘要
 
-| 决策 | 结论 |
-| --- | --- |
-| 产品形态 | 单个 Chrome Extension |
-| 服务器 | 不需要 |
-| 本地服务 | 不需要 |
-| 音频捕获 | tabCapture + Offscreen + AudioWorklet |
-| 推理 | 扩展内 Web Worker + WebAssembly |
-| 模型 | Silero VAD v5 + int8 Streaming Zipformer + CT-Punc |
-| 首版语言 | 简体中文 |
-| 字幕 | 临时结果 + 终稿替换 |
-| 网络 | 默认完全关闭 |
-| 发布 | Chrome Web Store 单包 |
-| 后续翻译 | 浏览器内本地翻译 Worker |
+| 决策     | 结论                                               |
+| -------- | -------------------------------------------------- |
+| 产品形态 | 单个 Chrome Extension                              |
+| 服务器   | 不需要                                             |
+| 本地服务 | 不需要                                             |
+| 音频捕获 | tabCapture + Offscreen + AudioWorklet              |
+| 推理     | 扩展内 Web Worker + WebAssembly                    |
+| 模型     | Silero VAD v5 + int8 Streaming Zipformer + CT-Punc |
+| 首版语言 | 简体中文                                           |
+| 字幕     | 临时结果 + 终稿替换                                |
+| 网络     | 默认完全关闭                                       |
+| 发布     | Chrome Web Store 单包                              |
+| 后续翻译 | 浏览器内本地翻译 Worker                            |
