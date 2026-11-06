@@ -12,34 +12,163 @@
 
 本文描述当前代码实际运行方式。多语言识别、目标语言选择和翻译不在当前实现范围内。
 
-## 1. 模型与运行时
+## 1. 模型清单与职责
 
-### 1.1 ASR 模型
+当前使用两个相互独立的神经网络模型。一个负责“音频转文字”，另一个负责“文字加标点”。
+
+| 序号 | 模型 | 核心作用 | 执行位置 |
+| --- | --- | --- | --- |
+| 1 | Streaming Zipformer ASR | 把语音识别为原始文字 | ASR Worker |
+| 2 | CT-Punc | 为原始文字插入标点 | Caption Worker |
+
+当前没有神经 VAD、语言检测、翻译、说话人分离或目标语言模型。
+
+### 1.1 模型一：Streaming Zipformer ASR
+
+#### 基本信息
 
 | 项目 | 内容 |
 | --- | --- |
-| 模型 | `streaming-zipformer-bilingual-zh-en-2023-02-20` |
-| 类型 | 流式 Zipformer 中英双语 ASR |
-| 组成 | `encoder.onnx`、`decoder.onnx`、`joiner.onnx`、`tokens.txt` |
+| 模型标识 | `streaming-zipformer-bilingual-zh-en-2023-02-20` |
+| 模型类型 | 流式 Zipformer 中英双语自动语音识别 |
+| 模型文件 | `encoder.onnx`、`decoder.onnx`、`joiner.onnx`、`tokens.txt` |
+| 封装位置 | Sherpa-ONNX `.data` 虚拟文件系统 |
 | 推理运行时 | Sherpa-ONNX v1.13.7 WebAssembly SIMD |
-| 执行位置 | `asr-worker.js` |
-| 输入 | 16 kHz、单声道、PCM16 音频帧 |
-| 输出 | 原始预览文本和原始终稿文本 |
+| 执行位置 | `apps/extension/src/asr-worker.ts` |
 
-编码器、解码器、联合网络和词表封装在 Sherpa-ONNX 的 `.data` 虚拟文件系统中，逻辑上属于一个 ASR 模型。
+编码器、解码器、联合网络和词表是一个 ASR 系统的组成部分，不是三个独立模型。
 
-### 1.2 标点模型
+#### 输入
+
+```text
+16 kHz
+单声道
+Float32 波形送入模型
+PCM16 由 Worker 转换成 Float32
+每帧 320 samples，持续 20 ms
+```
+
+#### 负责的工作
+
+1. 接收当前语音识别流中的音频。
+2. 持续更新流式识别结果。
+3. 把语音转换成中英文字符。
+4. 在语音进行中输出临时预览文本。
+5. 在语音段结束时输出最终原始文本。
+
+示例：
+
+```text
+音频：“对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢”
+ASR 输出：对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢
+```
+
+#### 不负责的工作
+
+| 不属于 ASR 模型 | 实际负责组件 |
+| --- | --- |
+| 判断什么时候开始或结束语音段 | ASR Worker 中的能量 VAD |
+| 加逗号、句号、问号 | CT-Punc |
+| 把长文本拆成多条字幕 | 字幕切分器 |
+| 翻译成其他语言 | 当前未实现 |
+| 识别说话人 | 当前未实现 |
+
+ASR 配置使用 `enableEndpoint = 0`，因此识别段起止由应用层 VAD 决定，不使用模型内置端点检测。
+
+#### 输出
+
+```typescript
+{
+  kind: 'preview' | 'final',
+  text: '原始识别文本',
+  audioStartUs,
+  audioEndUs,
+  processingMs
+}
+```
+
+### 1.2 模型二：CT-Punc
+
+#### 基本信息
 
 | 项目 | 内容 |
 | --- | --- |
-| 模型 | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
-| 类型 | CT-Punc 标点恢复，int8 ONNX |
-| 文件 | `model.int8.onnx`、`tokens.json` |
+| 模型标识 | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
+| 模型类型 | CT-Transformer 标点恢复，int8 ONNX |
+| 模型文件 | `model.int8.onnx`、`tokens.json` |
 | 推理运行时 | ONNX Runtime Web 1.31.1，WASM 单线程 |
-| 执行位置 | `caption-worker.js` |
-| 标点类别 | 无标点、逗号、句号、问号、顿号 |
+| 执行位置 | `apps/extension/src/caption-worker.ts` |
+| 单次输入上限 | 200 个 token；超过时保持原始文本 |
 
-### 1.3 非模型能力
+#### 输入
+
+```text
+ASR 输出的无标点或弱标点文本
+→ 清理原有标点
+→ 中文按字符、英文按单词切分
+→ 查询 tokens.json 得到 token ID
+→ 输入 CT-Punc
+```
+
+#### 负责的工作
+
+1. 判断每个文本 token 后面应该使用什么标点。
+2. 输出无标点、逗号、句号、问号或顿号。
+3. 把选中的标点写回 ASR 文本。
+4. 同时处理实时预览文本和最终文本。
+
+示例：
+
+```text
+ASR：对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢
+CT-Punc：对我做了介绍，那么我想说的是，大家如果对我的研究感兴趣呢。
+```
+
+#### 不负责的工作
+
+| 不属于 CT-Punc | 实际负责组件 |
+| --- | --- |
+| 听音频或识别文字 | ASR 模型 |
+| 判断语音段起止 | ASR Worker 中的能量 VAD |
+| 把文本拆成多条 UI 字幕 | 字幕切分器 |
+| 翻译文本 | 当前未实现 |
+| 修正 ASR 错字 | CT-Punc 不承担 ASR 纠错 |
+
+CT-Punc 为每个 token 输出标点类别，字幕切分器再消费这些标点。模型负责标点位置，切分器负责最终字幕排版和最大宽度。
+
+#### 输出
+
+```text
+带标点文本
+```
+
+### 1.3 两个模型如何协作
+
+```text
+PCM 音频
+→ ASR 模型
+→ 无标点原始文本
+→ CT-Punc
+→ 带标点文本
+→ 字幕切分器
+→ 一条或多条 UI 字幕
+```
+
+完整示例：
+
+```text
+ASR 输出：
+对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢
+
+CT-Punc 输出：
+对我做了介绍，那么我想说的是，大家如果对我的研究感兴趣呢。
+
+字幕切分器输出：
+1. 对我做了介绍，
+2. 那么我想说的是，大家如果对我的研究感兴趣呢。
+```
+
+### 1.4 非模型能力
 
 | 能力 | 当前实现 |
 | --- | --- |
