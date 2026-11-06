@@ -35,6 +35,19 @@ const PUNCTUATION_PACKAGE = {
   target: ['vendor', 'ct-punc']
 };
 
+const VAD_PACKAGE = {
+  name: 'vad',
+  archiveFileName: 'vad-web-0.0.31.tgz',
+  url: 'https://registry.npmjs.org/@ricky0123/vad-web/-/vad-web-0.0.31.tgz',
+  sha256: 'd1a211cf1a2ed26297da52cc08de79e75d79838a274bfc6de546feb1f828c940',
+  archiveRoot: 'package',
+  files: [{
+    source: 'dist/silero_vad_v5.onnx',
+    target: 'silero_vad_v5.onnx'
+  }],
+  target: ['vendor', 'vad']
+};
+
 const ORT_FILES = [
   'ort.wasm.min.js',
   'ort-wasm-simd-threaded.mjs',
@@ -52,7 +65,10 @@ async function sha256(filePath) {
 }
 
 async function downloadPackage(spec) {
-  const archivePath = path.join(cacheDir, `${spec.name}.tar.bz2`);
+  const archivePath = path.join(
+    cacheDir,
+    spec.archiveFileName ?? `${spec.name}.tar.bz2`
+  );
   const extractDir = path.join(cacheDir, `extract-${spec.name}`);
   const targetDir = path.join(rootDir, ...spec.target);
   const hasArchive = await stat(archivePath)
@@ -95,10 +111,12 @@ async function downloadPackage(spec) {
   const sourceDir = path.join(extractDir, spec.archiveRoot);
   await rm(targetDir, { recursive: true, force: true });
   await mkdir(targetDir, { recursive: true });
-  for (const fileName of spec.files) {
+  for (const file of spec.files) {
+    const sourceName = typeof file === 'string' ? file : file.source;
+    const targetName = typeof file === 'string' ? file : file.target;
     await cp(
-      path.join(sourceDir, fileName),
-      path.join(targetDir, fileName)
+      path.join(sourceDir, sourceName),
+      path.join(targetDir, targetName)
     );
   }
   console.log(`${spec.name} runtime installed at ${targetDir}`);
@@ -106,6 +124,7 @@ async function downloadPackage(spec) {
 
 await downloadPackage(ASR_PACKAGE);
 await downloadPackage(PUNCTUATION_PACKAGE);
+await downloadPackage(VAD_PACKAGE);
 
 const ortSourceDir = path.join(rootDir, 'node_modules', 'onnxruntime-web', 'dist');
 const ortTargetDir = path.join(rootDir, 'vendor', 'onnxruntime-web');

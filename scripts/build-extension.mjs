@@ -12,6 +12,7 @@ const outputDir = path.join(rootDir, 'dist');
 const wasmRuntimeDir = path.join(rootDir, 'vendor', 'sherpa-onnx-web');
 const puncRuntimeDir = path.join(rootDir, 'vendor', 'ct-punc');
 const ortRuntimeDir = path.join(rootDir, 'vendor', 'onnxruntime-web');
+const vadRuntimeDir = path.join(rootDir, 'vendor', 'vad');
 
 await rm(outputDir, { recursive: true, force: true });
 await mkdir(outputDir, { recursive: true });
@@ -56,9 +57,12 @@ const puncAvailable = await access(
 const ortAvailable = await access(
   path.join(ortRuntimeDir, 'ort-wasm-simd-threaded.wasm')
 ).then(() => true).catch(() => false);
-if (!puncAvailable || !ortAvailable) {
+const vadAvailable = await access(
+  path.join(vadRuntimeDir, 'silero_vad_v5.onnx')
+).then(() => true).catch(() => false);
+if (!puncAvailable || !ortAvailable || !vadAvailable) {
   throw new Error(
-    'Punctuation runtime is missing. Run "npm run runtime:fetch" before building.'
+    'VAD or punctuation runtime is missing. Run "npm run runtime:fetch" before building.'
   );
 }
 await cp(
@@ -70,6 +74,9 @@ await cp(puncRuntimeDir, path.join(outputDir, 'runtime', 'ct-punc'), {
   recursive: true
 });
 await cp(ortRuntimeDir, path.join(outputDir, 'runtime', 'onnxruntime-web'), {
+  recursive: true
+});
+await cp(vadRuntimeDir, path.join(outputDir, 'runtime', 'vad'), {
   recursive: true
 });
 

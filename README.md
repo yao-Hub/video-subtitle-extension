@@ -13,6 +13,7 @@
 | 标签页音频捕获 | 已实现 |
 | 原视频声音继续播放 | 已实现 |
 | 16 kHz 单声道 PCM | 已实现 |
+| 浏览器内 Silero VAD 人声检测 | 已实现 |
 | 浏览器内 WASM 中文识别 | 已实现 |
 | 临时字幕和终稿替换 | 已实现 |
 | CT-Punc 驱动的实时分句 | 已实现 |
@@ -28,12 +29,13 @@
 | 多目标语言 | 待实现 |
 | SRT/VTT 导出 | 待实现 |
 
-当前使用两个神经网络模型：
+当前使用三个神经网络模型：
 
+- Silero VAD v5：负责人声概率检测和语音段起止，不负责识别文字。
 - 中英双语流式 Zipformer：负责把音频识别为原始文字，不负责标点、分句和翻译。
 - CT-Punc：负责给识别文本补充逗号、句号、问号和顿号，不负责听音频或识别文字。
 
-语音段起止由固定音量阈值算法控制，不是模型。首阶段只承诺中文视频识别，模型和 WASM 运行时全部打包在扩展中。
+首阶段只承诺中文视频识别，模型和 WASM 运行时全部打包在扩展中。
 
 第一版的完整实现状态和未实现范围见：
 
@@ -48,9 +50,10 @@
 Offscreen Document
   ↓ AudioWorklet：16 kHz PCM
 ASR Web Worker
-  ↓ 原始 ASR 文本
+  ├── Silero VAD：检测人声并分段
+  └── Streaming Zipformer：音频转原始文字
 Caption Web Worker
-  ↓ 分句和标点后处理
+  └── CT-Punc：标点与模型标点分句
 Popup Panel
 ```
 
@@ -109,10 +112,11 @@ npm run runtime:fetch
 npm run build
 ```
 
-`runtime:fetch` 会下载并校验 Sherpa-ONNX 与 CT-Punc 模型包，并复制 ONNX Runtime Web：
+`runtime:fetch` 会下载并校验 Sherpa-ONNX、Silero VAD 与 CT-Punc 模型包，并复制 ONNX Runtime Web：
 
 ```text
 vendor/sherpa-onnx-web
+vendor/vad
 vendor/ct-punc
 vendor/onnxruntime-web
 ```
@@ -135,7 +139,7 @@ D:\project\video-subtitle-extension\dist
 1. 打开包含视频的网页并播放。
 2. 点击浏览器工具栏中的扩展图标。
 3. Chrome 会打开一个独立字幕弹窗。
-4. 首次启动会加载识别模型、中文标点模型和 WASM 运行时。
+4. 首次启动会加载人声检测模型、识别模型、中文标点模型和 WASM 运行时。
 5. 点击“启动中文字幕”。
 6. 黄色虚线字幕是临时结果，普通字幕是终稿。
 7. 点击终稿字幕可跳转到对应视频时间。
@@ -176,7 +180,7 @@ http://127.0.0.1:8123/tests/browser/wasm-smoke.html
 
 - 扩展包较大，包含识别、标点和推理运行时资源。
 - 模型加载需要一定时间，首次启动更明显。
-- 当前 VAD 使用能量阈值。
+- VAD 使用 Silero 概率阈值，复杂音乐、混响和远场声音仍可能误判。
 - 实时预览和终稿都使用 CT-Punc 恢复中文标点，再由模型标点决定字幕边界；无标点时按最大宽度兜底。
 - 当前只做中文识别，不做外语翻译。
 - 尚未实现 SRT/VTT 导出和历史记录。
@@ -191,5 +195,7 @@ http://127.0.0.1:8123/tests/browser/wasm-smoke.html
 
 - Sherpa-ONNX 1.13.7，Apache-2.0。
 - Streaming Zipformer bilingual zh-en 模型，Apache-2.0。
+- Silero VAD v5，MIT。
+- CT-Punc int8，Apache-2.0。
 
-完整说明见 `THIRD_PARTY_NOTICES.md` 和 `licenses/sherpa-onnx-LICENSE`。
+完整说明见 `THIRD_PARTY_NOTICES.md` 和 `licenses/`。

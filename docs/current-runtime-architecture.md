@@ -8,22 +8,23 @@
 | 当前输出 | 简体中文验证链路 |
 | 运行位置 | 浏览器本地 |
 | 远程服务器 | 无 |
-| 神经网络模型数量 | 2 |
+| 神经网络模型数量 | 3 |
 
 本文描述当前代码实际运行方式。多语言识别、目标语言选择和翻译不在当前实现范围内。
 
 ## 1. 模型清单与职责
 
-当前使用两个相互独立的神经网络模型。一个负责“音频转文字”，另一个负责“文字加标点”。
+当前使用三个相互独立的神经网络模型，依次负责“人声检测”“音频转文字”和“文字加标点”。
 
-| 序号 | 模型 | 核心作用 | 执行位置 |
+| 模型 | 处理阶段 | 核心作用 | 执行位置 |
 | --- | --- | --- | --- |
-| 1 | Streaming Zipformer ASR | 把语音识别为原始文字 | ASR Worker |
-| 2 | CT-Punc | 为原始文字插入标点 | Caption Worker |
+| Silero VAD v5 | ASR 之前 | 判断音频块是否包含人声 | ASR Worker |
+| Streaming Zipformer ASR | VAD 之后 | 把人声识别为原始文字 | ASR Worker |
+| CT-Punc | ASR 之后 | 为原始文字插入标点 | Caption Worker |
 
-当前没有神经 VAD、语言检测、翻译、说话人分离或目标语言模型。
+当前没有语言检测、翻译、说话人分离或目标语言模型。
 
-### 1.1 模型一：Streaming Zipformer ASR
+### 1.1 Streaming Zipformer ASR
 
 #### 基本信息
 
@@ -67,7 +68,7 @@ ASR 输出：对我做了介绍那么我想说的是大家如果对我的研究�
 
 | 不属于 ASR 模型 | 实际负责组件 |
 | --- | --- |
-| 判断什么时候开始或结束语音段 | ASR Worker 中的能量 VAD |
+| 判断什么时候开始或结束语音段 | Silero VAD |
 | 加逗号、句号、问号 | CT-Punc |
 | 把长文本拆成多条字幕 | 字幕切分器 |
 | 翻译成其他语言 | 当前未实现 |
@@ -87,7 +88,51 @@ ASR 配置使用 `enableEndpoint = 0`，因此识别段起止由应用层 VAD �
 }
 ```
 
-### 1.2 模型二：CT-Punc
+### 1.2 Silero VAD v5
+
+#### 基本信息
+
+| 项目 | 内容 |
+| --- | --- |
+| 模型 | `silero-vad-v5` |
+| 类型 | 神经网络人声活动检测 |
+| 模型文件 | `silero_vad_v5.onnx` |
+| 推理运行时 | ONNX Runtime Web 1.31.1，WASM 单线程 |
+| 执行位置 | `apps/extension/src/asr-worker.ts` |
+
+#### 输入
+
+```text
+AudioWorklet 输出的 16 kHz 单声道 PCM
+→ 每 20 ms 一帧
+→ ASR Worker 累积为 512 samples，即 32 ms VAD 块
+→ 附加前一块末尾 64 samples 作为上下文
+→ 输入 Silero VAD
+```
+
+#### 负责的工作
+
+1. 输出每个音频块包含人声的概率。
+2. 根据正负概率阈值判断人声开始、持续和结束。
+3. 在开始时提供最近 300 ms 前置音频。
+4. 在人声结束后结束 ASR 识别段。
+
+#### 不负责的工作
+
+| 不属于 Silero VAD | 实际负责组件 |
+| --- | --- |
+| 识别具体说了什么 | Streaming Zipformer ASR |
+| 添加标点 | CT-Punc |
+| 翻译文字 | 当前未实现 |
+
+#### 输出
+
+```text
+每个 32 ms 音频块的人声概率
+→ 语音开始 / 语音继续 / 语音结束
+```
+
+### 1.3 CT-Punc
 
 #### 基本信息
 
@@ -129,7 +174,7 @@ CT-Punc：对我做了介绍，那么我想说的是，大家如果对我的研�
 | 不属于 CT-Punc | 实际负责组件 |
 | --- | --- |
 | 听音频或识别文字 | ASR 模型 |
-| 判断语音段起止 | ASR Worker 中的能量 VAD |
+| 判断语音段起止 | Silero VAD |
 | 把文本拆成多条 UI 字幕 | 字幕切分器 |
 | 翻译文本 | 当前未实现 |
 | 修正 ASR 错字 | CT-Punc 不承担 ASR 纠错 |
@@ -142,13 +187,14 @@ CT-Punc 为每个 token 输出标点类别，字幕切分器再消费这些标�
 带标点文本
 ```
 
-### 1.3 两个模型如何协作
+### 1.4 三个模型如何协作
 
 ```text
 PCM 音频
-→ ASR 模型
+→ Silero VAD：判断是否有人声并确定识别段
+→ Streaming Zipformer ASR：音频转文字
 → 无标点原始文本
-→ CT-Punc
+→ CT-Punc：插入标点
 → 带标点文本
 → 字幕切分器
 → 一条或多条 UI 字幕
@@ -168,16 +214,15 @@ CT-Punc 输出：
 2. 那么我想说的是，大家如果对我的研究感兴趣呢。
 ```
 
-### 1.4 非模型能力
+### 1.5 非模型能力
 
 | 能力 | 当前实现 |
 | --- | --- |
-| VAD | 固定 RMS 音量阈值的规则算法 |
 | 字幕切分 | 模型标点优先、字幕宽度兜底的确定性算法 |
 | 语言检测 | 未实现 |
 | 翻译 | 未实现 |
 
-当前只有两个神经网络模型，不存在独立的 VAD、语言检测或翻译模型。
+当前有三个神经网络模型，不存在语言检测、翻译或目标语言模型。
 
 ## 2. 组件架构
 
@@ -190,8 +235,8 @@ Offscreen Document
   │     └── 混音、16 kHz 重采样、PCM16、20 ms 分帧
   ├── ASR Web Worker
   │     ├── Sherpa-ONNX WASM
-  │     ├── 能量 VAD
-  │     └── Streaming Zipformer
+  │     ├── Silero VAD v5
+  │     └── Sherpa-ONNX Streaming Zipformer
   └── Caption Web Worker
         ├── ONNX Runtime Web
         ├── CT-Punc
@@ -229,7 +274,7 @@ Popup Panel
 → Background 申请 tabCapture Stream ID
 → Background 创建或复用 Offscreen
 → Offscreen 创建 ASR Worker
-→ ASR Worker 加载 WASM 和 ASR 模型
+→ ASR Worker 加载 Sherpa ASR、Silero VAD 和 ONNX Runtime
 → ASR Worker 返回 worker.ready
 → Offscreen 后台创建 Caption Worker
 → Offscreen 建立 MediaStream
@@ -238,7 +283,7 @@ Popup Panel
 → Offscreen 返回 startedAtEpochMs
 ```
 
-Caption Worker 不在采音前置条件中。ASR Worker 就绪后就开始建立音频管线，CT-Punc 模型继续在后台加载。
+ASR Worker 只有在 Silero VAD 和 ASR 模型都就绪后才返回 `worker.ready`。Caption Worker 不在采音前置条件中，CT-Punc 模型继续在后台加载。
 
 ## 4. 音频处理
 
@@ -255,31 +300,36 @@ MediaStreamSource
 | 格式 | signed PCM16 |
 | 帧长 | 320 samples |
 | 帧时长 | 20 ms |
-| 时间戳 | `帧序号 × 20,000 µs` |
+| 时间戳 | ASR Worker 按累计 sample 数换算 |
 
 PCM `ArrayBuffer` 使用 Transferable 发给 ASR Worker。
 
-## 5. ASR 与 VAD 执行顺序
+## 5. VAD 与 ASR 执行顺序
 
 | 参数 | 当前值 |
 | --- | ---: |
-| RMS 语音阈值 | `0.008`，约 `-42 dBFS` |
-| 连续语音启动 | 3 帧，约 60 ms |
+| VAD 音频块 | 512 samples，32 ms |
+| 人声概率开始阈值 | `0.5` |
+| 人声概率结束阈值 | `0.35` |
+| 连续人声启动 | 2 个 VAD 块，64 ms |
 | 前置缓冲 | 300 ms |
 | 结束静音 | 650 ms |
 | 最长语音段 | 12 秒 |
 | 临时结果间隔 | 250 ms |
 
 ```text
-20 ms 音频帧
-→ 计算 RMS
+20 ms PCM 音频帧
+→ 累积为 32 ms VAD 块
+→ Silero VAD 输出人声概率
+→ 概率 ≥ 0.5 视为人声
+→ 连续 2 个 VAD 块有人声后创建语音段
 → 没有活动识别段时维护最多 300 ms 前置缓冲
-→ 连续 3 帧超过音量阈值
 → 创建 RecognizerStream
-→ 送入前置缓冲和后续音频
+→ 将前置缓冲和后续音频送入 ASR
 → 每 250 ms 检查流式解码结果
 → 文本变化时发送 asr.caption preview
-→ 静音达到 650 ms 或段长达到 12 秒
+→ 概率 ≤ 0.35 的音频块累计达到 650 ms
+→ 或段长达到 12 秒
 → 解码最终文本
 → 发送 asr.caption final
 → 释放 RecognizerStream
@@ -294,7 +344,7 @@ maxActivePaths = 4
 modelingUnit = cjkchar
 ```
 
-分段结束由应用层能量 VAD 控制，没有使用 ASR 模型自带的 endpoint。
+分段结束由 Silero VAD 概率控制，没有使用 ASR 模型自带的 endpoint。
 
 ## 6. 字幕后处理
 
@@ -438,6 +488,7 @@ Panel 点击停止
 
 | 故障 | 当前行为 |
 | --- | --- |
+| Silero VAD 模型加载失败 | 启动失败 |
 | ASR 模型加载失败 | 启动失败 |
 | ASR Worker 运行中崩溃 | 结束会话 |
 | Caption Worker 启动超时 | 原始字幕直接进入 UI |
@@ -451,7 +502,7 @@ Panel 点击停止
 1. ASR 是中英双语模型，当前只承诺中文场景。
 2. 输出固定为简体中文字幕。
 3. 没有语言检测、目标语言选择和翻译。
-4. VAD 使用固定音量阈值。
+4. VAD 依赖 Silero 概率阈值，复杂音乐、混响和远场声音仍可能误判。
 5. 标点和分句主要针对中文。
 6. 每个新会话都会重新加载模型。
 7. 只检测顶层页面中面积和播放状态最优的 `<video>`。
@@ -464,7 +515,7 @@ Panel 点击停止
 扩展 Panel
 → tabCapture
 → Offscreen + AudioWorklet
-→ ASR Worker：能量 VAD + 流式识别
+→ ASR Worker：Silero VAD → Streaming ASR
 → Caption Worker：CT-Punc + 模型标点分句
 → Offscreen：编号并串行发送
 → Background：串行转发

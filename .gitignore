@@ -4,4 +4,5 @@ dist/
 vendor/sherpa-onnx-web/
 vendor/ct-punc/
 vendor/onnxruntime-web/
+vendor/vad/
 

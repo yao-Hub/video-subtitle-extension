@@ -19,7 +19,6 @@ interface ActiveCapture {
   workletNode: AudioWorkletNode;
   monitorGain: GainNode;
   analysisGain: GainNode;
-  sequence: number;
   stopWaiter: (() => void) | null;
 }
 
@@ -303,7 +302,6 @@ async function startCapture(
       workletNode,
       monitorGain,
       analysisGain,
-      sequence: 0,
       stopWaiter: null
     };
     activeCapture = capture;
@@ -322,10 +320,8 @@ async function startCapture(
       const pcm = event.data;
       capture.asrWorker.postMessage({
         type: 'audio.frame',
-        timestampUs: capture.sequence * 20_000,
         samples: pcm
       }, [pcm]);
-      capture.sequence += 1;
     };
 
     await audioContext.resume();

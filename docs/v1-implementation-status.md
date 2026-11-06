@@ -7,6 +7,7 @@
 | 更新日期 | 2026-11-06 |
 | 产品形态 | 纯 Chrome Manifest V3 扩展 |
 | 当前输出语言 | 简体中文 |
+| 神经网络模型 | Silero VAD v5、Streaming Zipformer ASR、CT-Punc |
 | 运行方式 | 完全在浏览器本地运行 |
 | 远程服务 | 无 |
 | 本地辅助服务 | 无 |
@@ -85,13 +86,13 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
 | 浏览器内 WASM 推理 | 已实现 | 不依赖 Python 或本地服务 |
+| Silero 神经 VAD | 已实现 | 使用 Silero VAD v5 输出人声概率并控制语音段起止 |
 | 中文流式识别 | 已实现 | 使用 Sherpa-ONNX Streaming Zipformer |
 | 中英双语模型 | 已实现 | 当前阶段只承诺中文视频识别 |
 | 中文标点恢复 | 已实现 | 使用 ONNX CT-Punc 为实时预览和终稿恢复逗号、句号、问号和顿号 |
 | Worker 独立推理 | 已实现 | 不阻塞弹窗 UI |
 | 识别与后处理隔离 | 已实现 | ASR Worker 只输出原始文本；Caption Worker 独立初始化和处理，不阻塞采音 |
 | 模型随扩展打包 | 已实现 | 运行时不上传音频、不下载模型 |
-| 能量 VAD | 已实现 | 根据 RMS 判断语音和静音 |
 | 语音段切分 | 已实现 | 前置缓冲、静音结束和最大段长控制 |
 | 模型加载状态 | 已实现 | 显示加载、就绪、尾段处理和错误状态 |
 | 跳转时重置识别 | 已实现 | 点击字幕跳转后释放当前识别流，避免跨跳转污染 |
@@ -143,7 +144,7 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | 无遥测 | 已实现 | 不包含统计上报 |
 | 按需页面注入 | 已实现 | 使用 `activeTab` + `scripting`，没有全站常驻内容脚本 |
 | 模型完整性 | 已实现 | 构建阶段校验官方运行时压缩包 SHA-256 |
-| 第三方许可证 | 已实现 | 扩展包包含 Sherpa-ONNX Apache-2.0 许可证和声明 |
+| 第三方许可证 | 已实现 | 包含 Silero VAD、Sherpa-ONNX、CT-Punc 和 ONNX Runtime 许可证 |
 
 ### 2.7 工程与验证
 
@@ -165,16 +166,17 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | `npm run verify` | 通过 |
 | `npm run typecheck` | 通过 |
 | `noUnusedLocals` / `noUnusedParameters` | 通过 |
-| `npm run test:segmenter` | 5 项通过 |
+| `npm run test:segmenter` | 6 项通过 |
 | `npm run test:punctuation` | 2 项通过 |
 | `npm run test:caption` | 3 项通过 |
 | `npm run build` | 通过 |
 | Chrome Worker + WASM 推理 | 通过 |
 | 模型分句单元测试 | 通过 |
+| Silero VAD + ASR + CT-Punc 浏览器链路 | 通过 |
 | Chrome 实时预览模型分句 | 通过 |
 | Chrome 终稿模型分句 | 通过 |
 | 最终构建目录 | `dist` |
-| 构建产物体积 | 约 294.6 MB |
+| 构建产物体积 | 约 297 MB |
 | 本地服务端口 `17861` | 未监听 |
 
 Chrome 双 Worker 实测输出：
@@ -196,7 +198,7 @@ final: 大家如果对我的研究感兴趣呢，
 | --- | --- | --- |
 | 分句 | CT-Punc 标点边界优先，最大宽度兜底 | 模型未给出标点时只能按宽度断开，可能在词组内部切分 |
 | 标点 | 实时预览和终稿均使用 CT-Punc | 高频预览推理会增加 CPU 占用，低配设备可能出现延迟 |
-| VAD | RMS 能量阈值 | 音乐、噪声和低音量语音可能误判 |
+| VAD | Silero VAD v5 概率阈值 | 复杂音乐、混响和远场声音仍可能误判 |
 | 实时字幕 | 流式 ASR + 稳定前缀 | 较早前缀锁定后不会实时修订，只由终稿纠正 |
 | 终稿识别 | 当前流式模型重新解码完整语音段 | 没有独立高精度终稿模型 |
 | 语言支持 | 中英双语模型 | 当前只承诺中文视频识别 |

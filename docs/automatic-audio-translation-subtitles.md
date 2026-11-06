@@ -45,7 +45,7 @@
 ├── AudioWorklet：16 kHz PCM 转换
 ├── ASR Web Worker：只输出原始语音识别文本
 ├── Caption Web Worker：独立执行分句和 CT-Punc
-├── WebAssembly Runtime：ASR 与标点模型推理
+├── WebAssembly Runtime：VAD、ASR 与标点模型推理
 └── Bundled Models：随扩展分发的量化模型
 ```
 
@@ -135,20 +135,20 @@ Chrome Web Store 对 Manifest V3 扩展有明确限制：
 
 ### 3.3 模型体积约束
 
-第一阶段使用中文流式 ASR 模型和 CT-Punc 中文标点恢复模型。
+当前使用 Silero VAD、中英双语流式 ASR 模型和 CT-Punc 标点恢复模型。
 
 | 资源 | 策略 |
 | --- | --- |
 | 模型目录 | 随构建产物复制到 `dist/runtime` |
-| 模型格式 | 只包含 tokens 和 int8 ONNX 文件 |
-| 浮点模型 | 不随扩展发布 |
+| 模型格式 | 仅保留必要的 VAD、ASR、标点模型和词表 |
+| 浮点模型 | 仅 Silero VAD 等当前实现必需模型 |
 | 模型缓存 | 运行时从扩展资源加载到内存 |
 | 模型更新 | 随扩展版本发布 |
 
 建议首版扩展包预算：
 
 ```text
-扩展代码 + UI + 两个 WASM 运行时 + ASR/标点 int8 模型 ≤ 350 MB
+扩展代码 + UI + 两个 WASM 运行时 + VAD/ASR/标点模型 ≤ 350 MB
 ```
 
 最终以压缩包体积实测为准。
@@ -276,7 +276,7 @@ AudioWorklet 只处理音频格式，不进行语音识别。
 | --- | --- |
 | WASM 初始化 | 从扩展资源加载本地 WASM 运行时 |
 | 模型加载 | 读取 tokens 和 int8 ONNX 文件 |
-| VAD | 根据音频能量和状态切分语音段 |
+| VAD | 使用 Silero VAD v5 的人声概率切分语音段 |
 | 流式识别 | 对当前语音段持续解码 |
 | 原始临时结果 | 按节流间隔输出未分句文本 |
 | 原始终稿 | 在语音结束时输出未分句文本 |
@@ -363,11 +363,13 @@ worker-src 'self';
 | 项目 | 内容 |
 | --- | --- |
 | ASR 模型 | `sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20` |
+| VAD 模型 | Silero VAD v5 |
 | 标点模型 | `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8` |
+| VAD 推理 | ONNX Runtime Web，CPU WASM |
 | ASR 推理 | Sherpa-ONNX WebAssembly SIMD |
 | 标点推理 | ONNX Runtime Web，CPU WASM |
 | 标点类别 | 无标点、逗号、句号、问号、顿号 |
-| 许可 | ASR/CT-Punc Apache-2.0，ONNX Runtime MIT |
+| 许可 | Silero VAD MIT；ASR/CT-Punc Apache-2.0；ONNX Runtime MIT |
 
 ASR 使用 Sherpa-ONNX 官方预编译包，包含：
 
@@ -403,6 +405,9 @@ dist/runtime/onnxruntime-web/
 ├── ort-wasm-simd-threaded.mjs
 └── ort-wasm-simd-threaded.wasm
 
+dist/runtime/vad/
+└── silero_vad_v5.onnx
+
 dist/runtime/ct-punc/
 ├── model.int8.onnx
 └── tokens.json
@@ -435,10 +440,11 @@ dist/runtime/ct-punc/
 4. Offscreen Document 创建 ASR Worker。
 5. ASR Worker 从扩展资源读取 runtime JS 并加载 WASM。
 6. ASR Worker 读取 ASR tokens 和 int8 模型并创建 OnlineRecognizer。
-7. ASR Worker 返回 `worker.ready`。
-8. Offscreen 在后台启动 Caption Worker，同时继续建立 MediaStream 和音频管线。
-9. Caption Worker 加载 ONNX Runtime Web、CT-Punc 模型和词表，并返回 `caption.ready`。
-10. Caption Worker 就绪前，原始 ASR 字幕直接进入 UI；就绪后，原始字幕再送入 Caption Worker。
+7. ASR Worker 读取 Silero VAD 模型并创建 ONNX 会话。
+8. ASR Worker 在 ASR 和 VAD 都就绪后返回 `worker.ready`。
+9. Offscreen 在后台启动 Caption Worker，同时继续建立 MediaStream 和音频管线。
+10. Caption Worker 加载 ONNX Runtime Web、CT-Punc 模型和词表，并返回 `caption.ready`。
+11. Caption Worker 就绪前，原始 ASR 字幕直接进入 UI；就绪后，原始字幕再送入 Caption Worker。
 
 采音只等待 ASR Worker 就绪，不等待 Caption Worker。ASR 模型加载完成前不得开始消耗音频，
 避免无意义缓冲；字幕后处理初始化不属于这个前置条件。
@@ -522,7 +528,6 @@ Worker 通过 `MessagePort` 接收：
 ```typescript
 type AudioFrame = {
   type: 'audio.frame';
-  timestampUs: number;
   samples: ArrayBuffer;
 };
 ```
@@ -611,16 +616,16 @@ uninitialized
 
 ### 11.1 首版算法
 
-首版采用轻量能量 VAD，作为可替换实现：
+当前采用 Silero VAD v5，在浏览器内输出每个音频块的人声概率：
 
 | 参数 | 默认值 |
 | --- | ---: |
-| 音频帧 | 20 ms |
-| RMS 语音阈值 | 0.008 |
-| 连续语音启动 | 3 帧 |
+| VAD 音频块 | 32 ms，512 samples |
+| 人声概率开始阈值 | 0.5 |
+| 人声概率结束阈值 | 0.35 |
+| 连续语音启动 | 2 个 VAD 块，64 ms |
 | 前置缓冲 | 300 ms |
 | 结束静音 | 650 ms |
-| 最短语音段 | 500 ms |
 | 最长语音段 | 12 秒 |
 | 临时结果间隔 | 250 ms |
 
@@ -628,29 +633,31 @@ uninitialized
 
 ### 11.2 后续升级
 
-第二阶段可替换为：
+后续可评估：
 
-- Silero VAD WASM。
 - FSMN-VAD 的浏览器兼容版本。
-- 能量 VAD 与神经 VAD 双门限。
+- 不同语言的 VAD 阈值基准。
+- Silero VAD 与能量阈值双门限。
 
 替换 VAD 时保持 `VAD` 接口和字幕协议不变。
 
 ### 11.3 分段流程
 
-1. 累计最近 300 ms 音频作为前置缓冲。
-2. 连续检测到语音后创建 `segmentId`。
-3. 将前置缓冲和当前帧送入 OnlineRecognizer。
-4. 每隔 250 ms 解码当前识别状态。
-5. 若文本发生变化，ASR Worker 发送原始 `asr.caption` 预览事件。
-6. Caption Worker 将原始预览转换为 `caption.preview` 分句批次；异常时 Offscreen 直接透传原始预览。
-7. 静音达到阈值后停止当前段。
-8. ASR Worker 发送该段的原始 `asr.caption` 终稿事件。
-9. Caption Worker 优先按 CT-Punc 恢复的句末、句中标点切分终稿。
-10. 模型没有给出可用边界时，才按目标字符数和最大字符数兜底切分。
-11. 字幕文本不人工补标点，标点只来自 CT-Punc 或原始识别结果。
-12. 每条字幕按字符权重分配原语音段的时间范围，并发送带 `parentSegmentId` 的 `caption.final`。
-13. 创建新的识别流处理下一段。
+1. 将 20 ms PCM 帧累积为 32 ms VAD 块。
+2. Silero VAD 输出每个音频块的人声概率。
+3. 累计最近 300 ms 音频作为前置缓冲。
+4. 连续两个 VAD 块达到开始阈值后创建 `segmentId`。
+5. 将前置缓冲和后续音频送入 OnlineRecognizer。
+6. 每隔 250 ms 解码当前识别状态。
+7. 若文本发生变化，ASR Worker 发送原始 `asr.caption` 预览事件。
+8. Caption Worker 将原始预览转换为 `caption.preview` 分句批次；异常时 Offscreen 直接透传原始预览。
+9. 人声概率低于结束阈值并持续 650 ms 后停止当前段。
+10. ASR Worker 发送该段的原始 `asr.caption` 终稿事件。
+11. Caption Worker 优先按 CT-Punc 恢复的句末、句中标点切分终稿。
+12. 模型没有给出可用边界时，才按目标字符数和最大字符数兜底切分。
+13. 字幕文本不人工补标点，标点只来自 CT-Punc 或原始识别结果。
+14. 每条字幕按字符权重分配原语音段的时间范围，并发送带 `parentSegmentId` 的 `caption.final`。
+15. 创建新的识别流处理下一段。
 
 ## 12. 临时字幕与终稿
 
@@ -709,7 +716,7 @@ uninitialized
 音频时间以会话接收的第一帧为起点：
 
 ```text
-audioTimestampUs = 帧序号 × 20,000
+audioTimestampUs = 累计 sample 数 / 16,000 × 1,000,000
 ```
 
 ### 13.2 视频时间
@@ -828,6 +835,7 @@ Chrome 或 Edge 最新稳定版
 | --- | --- |
 | 扩展启动 | < 300 ms |
 | WASM 加载 | < 1.5 s |
+| Silero VAD 模型加载 | < 1 s |
 | ASR 模型加载 | < 3 s |
 | CT-Punc 模型加载 | < 5 s |
 | 首条临时字幕 P95 | < 1.5 s |
@@ -933,6 +941,7 @@ audio-capture-processor.js
 asr-worker.js
 caption-worker.js
 runtime/sherpa-onnx/*
+runtime/vad/*
 runtime/ct-punc/*
 runtime/onnxruntime-web/*
 models/zh/*
@@ -968,7 +977,7 @@ LICENSES/*
 
 - PCM 重采样。
 - 20 ms 分帧。
-- RMS 计算。
+- VAD 人声概率阈值。
 - 语音段开始和结束。
 - 临时预览批次替换规则。
 - 时间轴计算。
@@ -1054,7 +1063,7 @@ LICENSES/*
 | 项目 | 交付 |
 | --- | --- |
 | 目标 | 正确切分和稳定字幕 |
-| 内容 | 能量 VAD、CT-Punc 实时与终稿标点、模型标点驱动分句 |
+| 内容 | Silero VAD、CT-Punc 实时与终稿标点、模型标点驱动分句 |
 | 完成标准 | 静音不字幕，终稿具有模型恢复的中文标点 |
 
 ### 阶段 5：UI 和时间轴
@@ -1133,7 +1142,7 @@ ASR Worker
 | 本地服务 | 不需要 |
 | 音频捕获 | tabCapture + Offscreen + AudioWorklet |
 | 推理 | 扩展内 Web Worker + WebAssembly |
-| 模型 | int8 Streaming Zipformer + CT-Punc |
+| 模型 | Silero VAD v5 + int8 Streaming Zipformer + CT-Punc |
 | 首版语言 | 简体中文 |
 | 字幕 | 临时结果 + 终稿替换 |
 | 网络 | 默认完全关闭 |

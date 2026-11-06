@@ -12,6 +12,15 @@
 The full Sherpa-ONNX license is included at
 `licenses/sherpa-onnx-LICENSE`.
 
+## Silero VAD
+
+- Model: Silero VAD v5
+- Project: https://github.com/snakers4/silero-vad
+- Model package source: `@ricky0123/vad-web` 0.0.31
+- Package source: https://github.com/ricky0123/vad
+- License: MIT
+- License text: `licenses/silero-vad-MIT.txt`
+
 ## ONNX Runtime Web
 
 - Project: https://github.com/microsoft/onnxruntime
