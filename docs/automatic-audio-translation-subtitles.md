@@ -564,6 +564,8 @@ type FinalCaptionEvent = {
 5. 字幕事件通过结构化克隆传递，不共享 DOM 引用。
 6. ASR Worker 只能发送 `asr.caption`，不能直接发送 `caption.preview` 或 `caption.final`。
 7. Caption Worker 只能消费 `asr.caption`，不能控制 ASR 开始、停止或重置。
+8. Caption 事件在 Offscreen 分配单调递增的 `deliverySequence`。
+9. Offscreen 到 Background、Background 到 Panel 的消息必须串行投递，Panel 丢弃旧序号。
 
 ## 10. 状态机
 
@@ -717,12 +719,15 @@ audioTimestampUs = 帧序号 × 20,000
 }
 ```
 
-字幕视频时间计算：
+字幕视频时间使用锚点计算：
 
 ```text
-videoTimeMs = audioTimeMs + offsetMs
-offsetMs = videoCurrentTimeMs - (nowMs - sessionStartedAtMs)
+videoTimeMs = anchorVideoTimeMs
+  + (audioTimeMs - anchorAudioTimeMs) × playbackRate
 ```
+
+锚点在开始、暂停恢复、播放器缓冲、跳转和倍速变化时重新建立。正常播放期间
+每秒查询视频状态只用于检测变化，不重新计算所有已显示字幕的时间。
 
 ### 13.3 暂停和拖动
 

@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import {
+  captionsShareOverlappingText,
+  normalizeCaptionText
+} from './caption-text';
 import type {
   BackgroundRequestMessage,
   ExtensionRequest,
@@ -37,10 +41,6 @@ function formatTime(seconds: number): string {
   ].join(':');
 }
 
-function normalizeCaptionText(text: string): string {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-}
-
 function timeRangesOverlap(
   startA: number,
   endA: number,
@@ -50,29 +50,19 @@ function timeRangesOverlap(
   return startA <= endB + 300 && startB <= endA + 300;
 }
 
-function isDuplicateCaption(
-  text: string,
-  startMs: number,
-  endMs: number,
-  existing: CaptionRow
-): boolean {
-  if (existing.type !== 'caption.final') {
+function shouldMergeFinalCaption(existing: CaptionRow, incoming: CaptionRow): boolean {
+  if (
+    existing.type !== 'caption.final'
+    || !timeRangesOverlap(
+      incoming.videoStartMs,
+      incoming.videoEndMs,
+      existing.videoStartMs,
+      existing.videoEndMs
+    )
+  ) {
     return false;
   }
-  const currentText = normalizeCaptionText(text);
-  const existingText = normalizeCaptionText(existing.text);
-  if (!currentText || !existingText) {
-    return false;
-  }
-  return timeRangesOverlap(startMs, endMs, existing.videoStartMs, existing.videoEndMs)
-    && (
-      currentText === existingText
-      || (
-        currentText.length >= 6
-        && existingText.length >= 6
-        && (currentText.includes(existingText) || existingText.includes(currentText))
-      )
-    );
+  return captionsShareOverlappingText(incoming.text, existing.text);
 }
 
 async function sendRequest<T>(request: ExtensionRequest): Promise<T> {
@@ -91,7 +81,9 @@ function Panel(): React.JSX.Element {
   const [tabId, setTabId] = useState(0);
   const [video, setVideo] = useState<VideoState>({
     hasVideo: false,
-    currentTime: 0
+    currentTime: 0,
+    paused: true,
+    playbackRate: 1
   });
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({
@@ -104,21 +96,73 @@ function Panel(): React.JSX.Element {
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
 
   const startedAtRef = useRef(0);
-  const offsetMsRef = useRef(0);
+  const timelineAnchorRef = useRef<{
+    videoTimeMs: number;
+    audioElapsedMs: number;
+    playbackRate: number;
+  } | null>(null);
   const tabIdRef = useRef(0);
   const runningRef = useRef(false);
   const captionListRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
   const lastSeekAtRef = useRef(0);
+  const lastDeliverySequenceRef = useRef(0);
+  const lastVideoSyncRef = useRef<{
+    currentTime: number;
+    paused: boolean;
+    playbackRate: number;
+    syncedAt: number;
+  } | null>(null);
 
-  function updateOffset(nextVideo: VideoState): void {
+  function updateOffset(nextVideo: VideoState, force = false): void {
     setVideo(nextVideo);
-    if (runningRef.current && startedAtRef.current > 0) {
-      offsetMsRef.current = (
-        nextVideo.currentTime * 1000
-        - (Date.now() - startedAtRef.current)
-      );
+    if (!runningRef.current || !startedAtRef.current) {
+      return;
     }
+    const now = Date.now();
+    const previous = lastVideoSyncRef.current;
+    const elapsedSeconds = previous ? (now - previous.syncedAt) / 1000 : 0;
+    const expectedDelta = (
+      previous
+      && !previous.paused
+      && !nextVideo.paused
+    )
+      ? elapsedSeconds * nextVideo.playbackRate
+      : 0;
+    const actualDelta = previous
+      ? nextVideo.currentTime - previous.currentTime
+      : 0;
+    const timelineChanged = (
+      force
+      || !previous
+      || previous.paused !== nextVideo.paused
+      || previous.playbackRate !== nextVideo.playbackRate
+      || Math.abs(actualDelta - expectedDelta) > 0.75
+    );
+    if (timelineChanged) {
+      timelineAnchorRef.current = {
+        videoTimeMs: nextVideo.currentTime * 1000,
+        audioElapsedMs: now - startedAtRef.current,
+        playbackRate: nextVideo.playbackRate
+      };
+    }
+    lastVideoSyncRef.current = {
+      currentTime: nextVideo.currentTime,
+      paused: nextVideo.paused,
+      playbackRate: nextVideo.playbackRate,
+      syncedAt: now
+    };
+  }
+
+  function getVideoTimeMs(audioUs: number): number {
+    const anchor = timelineAnchorRef.current;
+    if (!anchor) {
+      return audioUs / 1000;
+    }
+    return (
+      anchor.videoTimeMs
+      + (audioUs / 1000 - anchor.audioElapsedMs) * anchor.playbackRate
+    );
   }
 
   async function refreshContext(): Promise<PanelContext> {
@@ -181,6 +225,7 @@ function Panel(): React.JSX.Element {
       }
 
       if (event.type === 'session.started') {
+        lastDeliverySequenceRef.current = 0;
         setActiveSessionId(event.sessionId);
         setStatus({
           type: 'active',
@@ -214,6 +259,15 @@ function Panel(): React.JSX.Element {
       }
 
       if (event.type === 'caption.preview') {
+        if (
+          event.deliverySequence !== undefined
+          && event.deliverySequence <= lastDeliverySequenceRef.current
+        ) {
+          return;
+        }
+        if (event.deliverySequence !== undefined) {
+          lastDeliverySequenceRef.current = event.deliverySequence;
+        }
         if (Date.now() - lastSeekAtRef.current < 400) {
           return;
         }
@@ -250,8 +304,8 @@ function Panel(): React.JSX.Element {
               text: part.text,
               processingMs: event.processingMs,
               stablePreview: part.stable,
-              videoStartMs: part.audioStartUs / 1000 + offsetMsRef.current,
-              videoEndMs: part.audioEndUs / 1000 + offsetMsRef.current
+              videoStartMs: getVideoTimeMs(part.audioStartUs),
+              videoEndMs: getVideoTimeMs(part.audioEndUs)
             };
             if (!next.some((item) => timeRangesOverlap(
               row.videoStartMs,
@@ -262,12 +316,20 @@ function Panel(): React.JSX.Element {
               next.push(row);
             }
           }
-          next.sort((a, b) => a.videoStartMs - b.videoStartMs);
           return next;
         });
         return;
       }
 
+      if (
+        event.deliverySequence !== undefined
+        && event.deliverySequence <= lastDeliverySequenceRef.current
+      ) {
+        return;
+      }
+      if (event.deliverySequence !== undefined) {
+        lastDeliverySequenceRef.current = event.deliverySequence;
+      }
       setLatestProcessingMs(event.processingMs);
       setStatus({
         type: 'active',
@@ -277,8 +339,8 @@ function Panel(): React.JSX.Element {
       setCaptions((previous) => {
         const row: CaptionRow = {
           ...event,
-          videoStartMs: event.audioStartUs / 1000 + offsetMsRef.current,
-          videoEndMs: event.audioEndUs / 1000 + offsetMsRef.current
+          videoStartMs: getVideoTimeMs(event.audioStartUs),
+          videoEndMs: getVideoTimeMs(event.audioEndUs)
         };
         let next = previous.filter((item) => item.segmentId !== event.segmentId);
         next = next.filter((item) => (
@@ -288,15 +350,27 @@ function Panel(): React.JSX.Element {
             && item.type === 'caption.partial'
           )
         ));
-        if (!next.some((item) => isDuplicateCaption(
-          row.text,
-          row.videoStartMs,
-          row.videoEndMs,
-          item
-        ))) {
+        const mergeIndex = next.findIndex((item) => (
+          shouldMergeFinalCaption(item, row)
+        ));
+        if (mergeIndex < 0) {
           next.push(row);
+        } else {
+          const existing = next[mergeIndex]!;
+          const preferred = (
+            normalizeCaptionText(row.text).length
+            >= normalizeCaptionText(existing.text).length
+          )
+            ? row
+            : existing;
+          next[mergeIndex] = {
+            ...preferred,
+            audioStartUs: Math.min(existing.audioStartUs, row.audioStartUs),
+            audioEndUs: Math.max(existing.audioEndUs, row.audioEndUs),
+            videoStartMs: Math.min(existing.videoStartMs, row.videoStartMs),
+            videoEndMs: Math.max(existing.videoEndMs, row.videoEndMs)
+          };
         }
-        next.sort((a, b) => a.videoStartMs - b.videoStartMs);
         return next;
       });
     };
@@ -369,6 +443,9 @@ function Panel(): React.JSX.Element {
   async function start(): Promise<void> {
     setStatus({ type: 'idle', text: '正在启动音频捕获' });
     setCaptions([]);
+    lastDeliverySequenceRef.current = 0;
+    lastVideoSyncRef.current = null;
+    timelineAnchorRef.current = null;
     setLatestProcessingMs(0);
     autoScrollRef.current = true;
     setShowScrollToLatest(false);
@@ -387,7 +464,7 @@ function Panel(): React.JSX.Element {
       startedAtRef.current = state.startedAtEpochMs;
       runningRef.current = true;
       setRunning(true);
-      updateOffset(context.video);
+      updateOffset(context.video, true);
       setStatus({ type: 'active', text: '音频捕获已启动' });
     } catch (error) {
       runningRef.current = false;
@@ -424,9 +501,11 @@ function Panel(): React.JSX.Element {
       const targetSeconds = caption.videoStartMs / 1000;
       lastSeekAtRef.current = Date.now();
       updateOffset({
+        ...video,
         hasVideo: true,
-        currentTime: targetSeconds
-      });
+        currentTime: targetSeconds,
+        paused: false
+      }, true);
       setCaptions((previous) => previous.filter(
         (item) => item.type === 'caption.final'
       ));

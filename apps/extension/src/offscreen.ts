@@ -26,22 +26,35 @@ interface ActiveCapture {
 let activeCapture: ActiveCapture | null = null;
 let pendingStoppedEvent:
   Extract<AsrWorkerEvent, { type: 'session.stopped' }> | null = null;
+let deliverySequence = 0;
+let deliveryQueue = Promise.resolve();
 
 function success<T = undefined>(data?: T): RuntimeResponse<T> {
   return { ok: true, data };
 }
 
-async function notifyInferenceEvent(event: InferenceEvent): Promise<void> {
+function notifyInferenceEvent(event: InferenceEvent): Promise<void> {
+  const sequencedEvent: InferenceEvent = (
+    event.type === 'caption.preview' || event.type === 'caption.final'
+  )
+    ? {
+        ...event,
+        deliverySequence: deliverySequence += 1
+      }
+    : event;
   const message: OffscreenEventMessage = {
     target: 'background',
     type: 'inference.event',
-    event
+    event: sequencedEvent
   };
-  try {
-    await chrome.runtime.sendMessage(message);
-  } catch {
-    // The service worker may be restarting; the active worker still owns the session.
-  }
+  deliveryQueue = deliveryQueue.then(async () => {
+    try {
+      await chrome.runtime.sendMessage(message);
+    } catch {
+      // The service worker may be restarting; the active worker still owns the session.
+    }
+  });
+  return deliveryQueue;
 }
 
 function forwardRawCaption(event: RawAsrCaptionEvent): void {
@@ -74,13 +87,13 @@ function forwardRawCaption(event: RawAsrCaptionEvent): void {
   });
 }
 
-function completeStoppedSession(): void {
+async function completeStoppedSession(): Promise<void> {
   const event = pendingStoppedEvent;
   pendingStoppedEvent = null;
-  activeCapture?.stopWaiter?.();
   if (event) {
-    void notifyInferenceEvent(event);
+    await notifyInferenceEvent(event);
   }
+  activeCapture?.stopWaiter?.();
 }
 
 function createCaptionWorker(): Promise<Worker> {
@@ -107,7 +120,7 @@ function createCaptionWorker(): Promise<Worker> {
       }
 
       if (message.type === 'caption.drained') {
-        completeStoppedSession();
+        void completeStoppedSession();
         return;
       }
 
@@ -141,7 +154,7 @@ function createCaptionWorker(): Promise<Worker> {
           message: '字幕后处理 Worker 已停止，继续输出原始识别字幕'
         });
       }
-      completeStoppedSession();
+      void completeStoppedSession();
     };
   });
 }
@@ -197,7 +210,7 @@ function createAsrWorker(sessionId: string): Promise<Worker> {
             type: 'caption.flush'
           } satisfies CaptionWorkerRequest);
         } else {
-          completeStoppedSession();
+          void completeStoppedSession();
         }
         return;
       }
@@ -234,6 +247,8 @@ async function startCapture(
   streamId: string
 ): Promise<RuntimeResponse<{ startedAtEpochMs: number }>> {
   await cleanupCapture();
+  await deliveryQueue;
+  deliverySequence = 0;
 
   const sessionId = `cs_${Date.now().toString(36)}_${crypto.randomUUID()}`;
   const asrWorker = await createAsrWorker(sessionId);

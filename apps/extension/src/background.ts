@@ -73,7 +73,9 @@ async function getVideoState(tabId: number): Promise<VideoState> {
   } catch {
     return {
       hasVideo: false,
-      currentTime: 0
+      currentTime: 0,
+      paused: true,
+      playbackRate: 1
     };
   }
 }
@@ -325,9 +327,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       type: 'inference.event',
       event
     };
-    void chrome.runtime.sendMessage(panelMessage).catch(() => undefined);
-    sendResponse({ ok: true });
-    return;
+    void chrome.runtime.sendMessage(panelMessage)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    return true;
   }
 
   if (message?.target !== 'background' || !message.request) {

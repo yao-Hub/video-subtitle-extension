@@ -125,6 +125,9 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | 识别数量统计 | 已实现 | 统计当前会话终稿数量 |
 | 处理耗时显示 | 已实现 | 展示最近一次 ASR 处理耗时 |
 | 结果状态提示 | 已实现 | 加载、识别、终稿、停止和错误状态 |
+| 字幕到达顺序 | 已实现 | Worker 到 Panel 串行投递，并携带递增投递序号 |
+| 稳定视频时间轴 | 已实现 | 使用视频时间和音频时间锚点，支持暂停与倍速校正 |
+| 重叠终稿合并 | 已实现 | 相邻且文本高度重叠的重复识别结果合并为一条 |
 
 ### 2.6 隐私与安全
 
@@ -148,6 +151,7 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | WASM 运行时下载 | 已实现 | `npm run runtime:fetch` 下载并校验 |
 | 分句单元测试 | 已实现 | 6 个测试用例 |
 | 标点模块单元测试 | 已实现 | 验证分词、标点应用和英文空格处理 |
+| 字幕重复文本测试 | 已实现 | 3 个测试用例 |
 | 浏览器 WASM 冒烟测试 | 已实现 | 使用真实中文 WAV 在 Chrome Worker 中识别 |
 | 文档 | 已实现 | README、总体技术方案和本文档 |
 
@@ -160,6 +164,7 @@ Caption Worker 在 ASR Worker 就绪后与采音建立过程并行初始化，�
 | `noUnusedLocals` / `noUnusedParameters` | 通过 |
 | `npm run test:segmenter` | 5 项通过 |
 | `npm run test:punctuation` | 2 项通过 |
+| `npm run test:caption` | 3 项通过 |
 | `npm run build` | 通过 |
 | Chrome Worker + WASM 推理 | 通过 |
 | 模型分句单元测试 | 通过 |

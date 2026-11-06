@@ -32,13 +32,17 @@ if (!bridgeState.__videoSubtitleBridgeInstalled) {
     if (!video) {
       return {
         hasVideo: false,
-        currentTime: 0
+        currentTime: 0,
+        paused: true,
+        playbackRate: 1
       };
     }
 
     return {
       hasVideo: true,
-      currentTime: Number(video.currentTime || 0)
+      currentTime: Number(video.currentTime || 0),
+      paused: video.paused,
+      playbackRate: Number(video.playbackRate || 1)
     };
   }
 

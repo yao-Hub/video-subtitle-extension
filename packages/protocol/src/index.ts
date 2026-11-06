@@ -24,6 +24,7 @@ export interface SessionStatusEvent {
 
 export interface FinalCaptionEvent {
   type: 'caption.final';
+  deliverySequence?: number;
   sessionId: string;
   segmentId: string;
   parentSegmentId: string;
@@ -43,6 +44,7 @@ export interface CaptionPreviewPart {
 
 export interface CaptionPreviewEvent {
   type: 'caption.preview';
+  deliverySequence?: number;
   sessionId: string;
   parentSegmentId: string;
   parts: CaptionPreviewPart[];
@@ -90,6 +92,8 @@ export type CaptionWorkerEvent =
 export interface VideoState {
   hasVideo: boolean;
   currentTime: number;
+  paused: boolean;
+  playbackRate: number;
 }
 
 export interface PanelContext {
