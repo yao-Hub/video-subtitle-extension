@@ -33,6 +33,7 @@
 第一版的完整实现状态和未实现范围见：
 
 - [第一版实现状态说明](docs/v1-implementation-status.md)
+- [当前运行架构与执行流程](docs/current-runtime-architecture.md)
 
 ## 架构
 
