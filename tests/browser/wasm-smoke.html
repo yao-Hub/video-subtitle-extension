@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <title>WASM ASR Smoke Test</title>
+  </head>
+  <body>
+    <pre id="output">starting</pre>
+    <script>
+      const output = document.getElementById('output');
+      const lines = [];
+      let finalText = '';
+
+      function append(text) {
+        lines.push(text);
+        output.textContent = lines.join('\n');
+      }
+
+      function readPcm16(wavBuffer) {
+        const view = new DataView(wavBuffer);
+        let offset = 12;
+        while (offset + 8 <= view.byteLength) {
+          const chunkId = String.fromCharCode(
+            view.getUint8(offset),
+            view.getUint8(offset + 1),
+            view.getUint8(offset + 2),
+            view.getUint8(offset + 3)
+          );
+          const chunkSize = view.getUint32(offset + 4, true);
+          if (chunkId === 'data') {
+            return wavBuffer.slice(offset + 8, offset + 8 + chunkSize);
+          }
+          offset += 8 + chunkSize;
+        }
+        throw new Error('WAV data chunk not found');
+      }
+
+      const asrWorker = new Worker('/dist/asr-worker.js');
+      const captionWorker = new Worker('/dist/caption-worker.js');
+      let asrReady = false;
+      let captionReady = false;
+      let started = false;
+      let stopped = false;
+
+      async function startRecognition() {
+        if (started || !asrReady || !captionReady) {
+          return;
+        }
+        started = true;
+        asrWorker.postMessage({
+          type: 'asr.start',
+          sessionId: 'browser-smoke'
+        });
+
+        const wavResponse = await fetch('/tests/fixtures/zh.wav');
+        const pcm = readPcm16(await wavResponse.arrayBuffer());
+        const sampleCount = pcm.byteLength / 2;
+        const frameSamples = 320;
+        for (let offset = 0; offset < sampleCount; offset += frameSamples) {
+          const startByte = offset * 2;
+          const endByte = Math.min(
+            pcm.byteLength,
+            startByte + frameSamples * 2
+          );
+          const frame = pcm.slice(startByte, endByte);
+          asrWorker.postMessage({
+            type: 'audio.frame',
+            timestampUs: Math.round(offset / 16 * 1000),
+            samples: frame
+          }, [frame]);
+        }
+        asrWorker.postMessage({ type: 'asr.stop' });
+      }
+
+      captionWorker.onerror = (event) => {
+        append(`caption-worker.error: ${event.message}`);
+        document.body.dataset.result = 'error';
+      };
+      captionWorker.onmessage = (event) => {
+        const message = event.data;
+        if (message.type === 'caption.ready') {
+          append('caption-worker.ready');
+          captionReady = true;
+          void startRecognition();
+          return;
+        }
+        if (message.type === 'caption.preview') {
+          append(`preview: ${message.parts.map((part) => part.text).join(' | ')}`);
+          return;
+        }
+        if (message.type === 'caption.final') {
+          finalText = message.text;
+          append(`final: ${message.text}`);
+          return;
+        }
+        if (message.type === 'caption.error') {
+          append(`caption.error: ${message.error}`);
+          document.body.dataset.result = 'error';
+          return;
+        }
+        if (message.type === 'caption.drained' && stopped) {
+          append('session.stopped');
+          document.body.dataset.result = finalText ? 'success' : 'empty';
+        }
+      };
+
+      asrWorker.onerror = (event) => {
+        append(`worker.error: ${event.message}`);
+        document.body.dataset.result = 'error';
+      };
+      asrWorker.onmessage = (event) => {
+        const message = event.data;
+        if (message.type === 'worker.error') {
+          append(`worker.error: ${message.error}`);
+          document.body.dataset.result = 'error';
+          return;
+        }
+        if (message.type === 'worker.ready') {
+          append('worker.ready');
+          asrReady = true;
+          void startRecognition();
+          return;
+        }
+        if (message.type === 'asr.caption') {
+          captionWorker.postMessage({
+            type: 'caption.raw',
+            event: message
+          });
+          return;
+        }
+        if (message.type === 'session.status') {
+          append(`status: ${message.message}`);
+          return;
+        }
+        if (message.type === 'session.error') {
+          append(`session.error: ${message.message}`);
+          document.body.dataset.result = 'error';
+          return;
+        }
+        if (message.type === 'session.stopped') {
+          stopped = true;
+          captionWorker.postMessage({ type: 'caption.flush' });
+        }
+      };
+    </script>
+  </body>
+</html>
+

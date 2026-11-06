@@ -1,0 +1,276 @@
+:root {
+  color-scheme: light;
+  --bg: #eef3fa;
+  --card: #ffffff;
+  --text: #13213a;
+  --muted: #61708a;
+  --line: #d8e1ef;
+  --primary: #1467e8;
+  --primary-hover: #0d56c8;
+  --danger: #cf3535;
+  --danger-hover: #af2929;
+  --interim: #fff7e6;
+  --interim-line: #e9bd5d;
+  --final: #f5f8fd;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at 12% 0%, #dbe9ff 0%, transparent 34%),
+    var(--bg);
+  color: var(--text);
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100vh;
+  min-height: 0;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.hero,
+.panel,
+.status,
+.captions {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(31, 55, 90, 0.06);
+}
+
+.hero {
+  padding: 16px;
+}
+
+.hero-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.hero p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.language-chip {
+  flex: 0 0 auto;
+  border: 1px solid #b8cdf3;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #edf4ff;
+  color: #1556b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px;
+}
+
+.button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.button-primary {
+  background: var(--primary);
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.button-danger {
+  background: var(--danger);
+}
+
+.button-danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
+.status {
+  padding: 11px 13px;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #93a0b4;
+}
+
+.status-dot.active {
+  background: #19a45b;
+  box-shadow: 0 0 0 4px rgba(25, 164, 91, 0.13);
+}
+
+.status-dot.error {
+  background: #d53c3c;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.pill {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #edf2fa;
+  color: #45617f;
+  font-size: 11px;
+}
+
+.captions {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  position: relative;
+  overflow: hidden;
+}
+
+.caption-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.caption {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 9px 10px;
+  background: var(--final);
+}
+
+.caption.partial {
+  border-color: var(--interim-line);
+  border-style: dashed;
+  background: var(--interim);
+}
+
+.caption.final {
+  cursor: pointer;
+}
+
+.caption.final:hover {
+  border-color: #88b0ef;
+}
+
+.caption-time {
+  color: #1662cd;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+}
+
+.caption-badge {
+  margin-left: 7px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: #fff0c9;
+  color: #805600;
+  font-family: "Microsoft YaHei", sans-serif;
+  font-size: 10px;
+}
+
+.caption-text {
+  margin-top: 5px;
+  color: #17243b;
+  font-size: 14px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.empty {
+  display: grid;
+  flex: 1;
+  min-height: 200px;
+  place-items: center;
+  color: #78869b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.scroll-latest {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  border: 1px solid #6da0e9;
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 5px 16px rgba(31, 68, 123, 0.18);
+  color: #1558b8;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scroll-latest:hover {
+  background: #edf4ff;
+}
+
+@media (max-width: 360px) {
+  .panel {
+    grid-template-columns: 1fr;
+  }
+}
+

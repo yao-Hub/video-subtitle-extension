@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.wasm-cache/
+vendor/sherpa-onnx-web/
+vendor/ct-punc/
+vendor/onnxruntime-web/
+
