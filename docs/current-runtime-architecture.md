@@ -12,6 +12,60 @@
 
 本文描述当前代码实际运行方式。多语言识别、目标语言选择和翻译不在当前实现范围内。
 
+## 流程脑图
+
+```mermaid
+mindmap
+  root((视频实时字幕))
+    音频入口
+      Chrome tabCapture
+      Offscreen Document
+      AudioWorklet
+      16 kHz 单声道 PCM
+    人声检测
+      Silero VAD v5
+      ONNX Runtime Web
+      人声概率
+      开始与结束阈值
+    语音识别
+      Streaming Zipformer
+      Sherpa-ONNX WASM
+      流式临时文本
+      原始终稿
+    字幕后处理
+      CT-Punc int8
+      模型标点恢复
+      标点优先分句
+      宽度兜底
+    事件链路
+      Offscreen 编号
+      串行消息投递
+      Panel 丢弃旧序号
+      重叠终稿合并
+    UI 与生命周期
+      稳定视频时间轴
+      自动滚动
+      点击字幕跳转
+      停止时刷新尾稿并释放资源
+```
+
+## 端到端执行顺序
+
+| 顺序 | 阶段 | 执行位置 | 核心技术 | 输出 |
+| ---: | --- | --- | --- | --- |
+| 1 | 打开字幕窗口 | Background、Panel | Chrome Windows API、React | 字幕控制窗口 |
+| 2 | 申请标签页音频 | Background | `chrome.tabCapture` | MediaStream ID |
+| 3 | 建立本地音频环境 | Offscreen | Offscreen Document | 音频会话 |
+| 4 | 加载模型 | ASR Worker | Sherpa-ONNX、ONNX Runtime Web | VAD + ASR 就绪 |
+| 5 | 音频转换和分帧 | AudioWorklet | Web Audio API | 16 kHz PCM16，每帧 20 ms |
+| 6 | 人声检测 | ASR Worker | Silero VAD v5 | 人声概率和语音段 |
+| 7 | 流式识别 | ASR Worker | Streaming Zipformer | 原始预览和终稿 |
+| 8 | 标点恢复 | Caption Worker | CT-Punc int8 | 带标点文本 |
+| 9 | 字幕切分 | Caption Worker | 模型标点优先规则 | 一条或多条字幕 |
+| 10 | 有序投递 | Offscreen、Background、Panel | `deliverySequence`、串行消息 | 按产生顺序显示 |
+| 11 | UI 展示 | Panel | React | 时间轴、自动滚动、跳转 |
+| 12 | 停止和收尾 | 全链路 | Flush 和资源释放 | 最后终稿、关闭会话 |
+
 ## 1. 模型清单与职责
 
 当前使用三个相互独立的神经网络模型，依次负责“人声检测”“音频转文字”和“文字加标点”。
@@ -64,16 +118,6 @@ PCM16 由 Worker 转换成 Float32
 ASR 输出：对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢
 ```
 
-#### 不负责的工作
-
-| 不属于 ASR 模型 | 实际负责组件 |
-| --- | --- |
-| 判断什么时候开始或结束语音段 | Silero VAD |
-| 加逗号、句号、问号 | CT-Punc |
-| 把长文本拆成多条字幕 | 字幕切分器 |
-| 翻译成其他语言 | 当前未实现 |
-| 识别说话人 | 当前未实现 |
-
 ASR 配置使用 `enableEndpoint = 0`，因此识别段起止由应用层 VAD 决定，不使用模型内置端点检测。
 
 #### 输出
@@ -116,14 +160,6 @@ AudioWorklet 输出的 16 kHz 单声道 PCM
 2. 根据正负概率阈值判断人声开始、持续和结束。
 3. 在开始时提供最近 300 ms 前置音频。
 4. 在人声结束后结束 ASR 识别段。
-
-#### 不负责的工作
-
-| 不属于 Silero VAD | 实际负责组件 |
-| --- | --- |
-| 识别具体说了什么 | Streaming Zipformer ASR |
-| 添加标点 | CT-Punc |
-| 翻译文字 | 当前未实现 |
 
 #### 输出
 
@@ -168,16 +204,6 @@ ASR 输出的无标点或弱标点文本
 ASR：对我做了介绍那么我想说的是大家如果对我的研究感兴趣呢
 CT-Punc：对我做了介绍，那么我想说的是，大家如果对我的研究感兴趣呢。
 ```
-
-#### 不负责的工作
-
-| 不属于 CT-Punc | 实际负责组件 |
-| --- | --- |
-| 听音频或识别文字 | ASR 模型 |
-| 判断语音段起止 | Silero VAD |
-| 把文本拆成多条 UI 字幕 | 字幕切分器 |
-| 翻译文本 | 当前未实现 |
-| 修正 ASR 错字 | CT-Punc 不承担 ASR 纠错 |
 
 CT-Punc 为每个 token 输出标点类别，字幕切分器再消费这些标点。模型负责标点位置，切分器负责最终字幕排版和最大宽度。
 
@@ -509,7 +535,318 @@ Panel 点击停止
 8. iframe 和复杂播放器适配不完整。
 9. 标签页广告、提示音和背景声也会进入识别。
 
-## 12. 执行摘要
+## 12. 分阶段技术选型与实现
+
+### 12.1 扩展窗口与用户控制
+
+**使用技术**
+
+- Chrome Manifest V3
+- `chrome.windows`
+- `chrome.storage.session`
+- React 19 + TypeScript
+
+**为什么使用**
+
+- Chrome 扩展需要有稳定的独立字幕窗口。
+- Manifest V3 Service Worker 不能长期持有界面状态。
+- React 适合维护字幕列表、运行状态、滚动状态和语言标签。
+- `chrome.storage.session` 能在 Service Worker 重启后恢复面板窗口和运行会话信息。
+
+**实现**
+
+1. Background 接收扩展图标点击事件。
+2. 查找已有 `panel.html` 窗口，优先复用。
+3. 没有窗口时创建 Chrome popup window。
+4. Panel 发送启动、停止、视频状态和跳转请求。
+5. 关闭窗口时停止音频会话。
+
+相关文件：`background.ts`、`panel.tsx`。
+
+### 12.2 视频检测与跳转
+
+**使用技术**
+
+- `activeTab`
+- `chrome.scripting.executeScript`
+- 页面桥接脚本
+- HTMLMediaElement DOM API
+
+**为什么使用**
+
+- 只有用户点击扩展后才临时访问当前页面，避免申请全站内容脚本权限。
+- 页面桥接脚本可以读取实际 `<video>` 的播放状态和当前时间。
+- 直接设置 `video.currentTime` 是最稳定的标准视频跳转方式。
+
+**实现**
+
+1. Background 向目标标签页发送 `page.get-video-state`。
+2. 页面脚本按可见面积和播放状态选择最佳 `<video>`。
+3. 返回 `hasVideo`、`currentTime`、`paused` 和 `playbackRate`。
+4. 点击字幕时发送 `page.jump-to-time`，设置视频时间并继续播放。
+
+相关文件：`background.ts`、`page-bridge.ts`、`panel.tsx`。
+
+### 12.3 标签页音频捕获
+
+**使用技术**
+
+- `chrome.tabCapture`
+- Offscreen Document
+- `getUserMedia`
+- MediaStream
+
+**为什么使用**
+
+- `tabCapture` 捕获的是标签页输出音频，不依赖视频网站字幕。
+- Manifest V3 Service Worker 不能长期持有 MediaStream 和 AudioContext。
+- Offscreen Document 有 DOM 和 Web Audio 能力，生命周期可以覆盖整个字幕会话。
+
+**实现**
+
+1. Background 在当前标签页获得音频 Stream ID。
+2. Offscreen 使用 Stream ID 建立 `MediaStream`。
+3. 通过 `MediaStreamAudioSourceNode` 创建两条音频分支。
+4. `monitorGain` 将原视频声音继续输出到扬声器。
+5. 第二条分支连接 AudioWorklet，用于字幕识别。
+
+必须保留第一条监听分支，否则部分浏览器会出现捕获标签页静音。
+
+相关文件：`background.ts`、`offscreen.ts`。
+
+### 12.4 音频重采样与分帧
+
+**使用技术**
+
+- Web Audio API
+- AudioWorklet
+- Float32 到 PCM16 转换
+- Transferable ArrayBuffer
+
+**为什么使用**
+
+- AudioWorklet 运行在实时音频渲染线程，适合连续音频处理。
+- 它不会运行模型推理，能满足音频帧实时截止时间。
+- 16 kHz 单声道是语音模型标准输入，同时显著降低计算量。
+- Transferable 传输避免 PCM 数据在 Worker 之间复制。
+
+**实现**
+
+1. 多声道按样本求平均，混合成单声道。
+2. 使用累计平均降采样到 16 kHz。
+3. 每 320 samples 输出一个 20 ms 帧。
+4. Float32 量化成 PCM16。
+5. `ArrayBuffer` 通过 Transferable 发送给 ASR Worker。
+
+相关文件：`audio-capture-processor.ts`、`offscreen.ts`。
+
+### 12.5 神经人声检测
+
+**使用技术**
+
+- Silero VAD v5
+- ONNX Runtime Web 1.31.1
+- WASM 单线程 SIMD
+
+**为什么使用**
+
+- 固定音量阈值无法可靠区分人声、音乐和噪声。
+- Silero VAD 体积较小，适合扩展内置。
+- ONNX Runtime Web 可以直接执行本地 ONNX 模型。
+- 单线程 SIMD 避免 SharedArrayBuffer 和跨源隔离要求。
+
+**实现**
+
+1. 20 ms PCM 帧在 ASR Worker 内累计为 512 samples。
+2. 每 32 ms 音频块执行一次 Silero VAD。
+3. 输入包含当前块和上一块末尾 64 samples 的上下文。
+4. 模型输出人声概率。
+5. 概率连续达到开始阈值后建立语音段。
+6. 概率低于结束阈值并持续 650 ms 后结束语音段。
+7. 开始语音段时回放最近 300 ms 前置缓冲。
+
+VAD 模型与 ASR 放在同一 Worker，是因为音频块、前置缓冲和语音段状态必须严格连续；这样可以避免再增加一次跨 Worker 音频传输。
+
+相关文件：`asr-worker.ts`。
+
+### 12.6 流式语音识别
+
+**使用技术**
+
+- Sherpa-ONNX v1.13.7
+- Streaming Zipformer 中英双语模型
+- WebAssembly SIMD
+- 流式 RecognizerStream
+
+**为什么使用**
+
+- 流式模型能持续输出临时结果，适合实时字幕。
+- WebAssembly 可保证模型和运行时随扩展本地执行。
+- Sherpa-ONNX 已提供成熟的中英双语流式和中文词表支持。
+- 不需要远程 ASR 服务，也不会上传音频。
+
+**实现**
+
+1. VAD 建立语音段后创建 `RecognizerStream`。
+2. 前置缓冲和当前音频块送入识别流。
+3. 每 250 ms 调用 decode 并读取中间结果。
+4. 文本变化时发送 `asr.caption preview`。
+5. VAD 结束语音段后执行最终 decode。
+6. 发送 `asr.caption final`，随后释放识别流。
+
+识别模型 `enableEndpoint = 0`，因为语音段边界由 Silero VAD 管理。
+
+相关文件：`asr-worker.ts`。
+
+### 12.7 ASR 与字幕后处理隔离
+
+**使用技术**
+
+- Dedicated ASR Web Worker
+- Dedicated Caption Web Worker
+- Structured Clone
+- Raw caption event
+
+**为什么使用**
+
+- ASR 和标点模型都需要 CPU，放在同一个 Worker 会互相阻塞。
+- Web Worker 不阻塞 Panel 主线程。
+- 独立 Caption Worker 后，CT-Punc 变慢或崩溃时仍可显示原始 ASR 字幕。
+
+**实现**
+
+ASR Worker 只发送原始事件：
+
+```text
+asr.caption preview/final
+```
+
+Offscreen 根据 Caption Worker 状态路由：
+
+```text
+Caption 就绪  → 送入 CT-Punc
+Caption 未就绪 → 原始字幕直接发送 UI
+Caption 崩溃  → 后续原始字幕直接发送 UI
+```
+
+Caption Worker 内部只缓存最新待处理预览，终稿按顺序处理。
+
+相关文件：`offscreen.ts`、`caption-worker.ts`。
+
+### 12.8 标点恢复
+
+**使用技术**
+
+- CT-Punc int8 ONNX
+- ONNX Runtime Web
+- Token 分类和 argmax
+
+**为什么使用**
+
+- ASR 主要输出连续文字，阅读需要标点。
+- CT-Punc 只处理文本，可以复用浏览器内 ONNX Runtime。
+- int8 量化降低扩展体积和内存占用。
+- 独立模型比连接词规则更通用，不依赖人工词表。
+
+**实现**
+
+1. 清理 ASR 原文中已有的标点。
+2. 中文按字符、英文按单词构造 token。
+3. token 转成模型 ID。
+4. 输入 CT-Punc，得到每个 token 的标点 logits。
+5. 对每个 token 取最高分类别。
+6. 将逗号、句号、问号或顿号写回文本。
+
+文本超过 200 个 token 或模型推理失败时，保持原始文本，继续走宽度兜底分句。
+
+相关文件：`caption-worker.ts`、`punctuation-engine.ts`。
+
+### 12.9 字幕分句
+
+**使用技术**
+
+- 模型标点边界识别
+- 字符权重时间分配
+- 最大宽度兜底
+
+**为什么使用**
+
+- CT-Punc 只判断标点，不知道 UI 一行能显示多少字符。
+- 字幕必须限制宽度，不能把一整个长语音段塞进一条卡片。
+- 标点优先可以保留语义边界，字符宽度用于显示约束。
+
+**实现**
+
+1. 优先在模型句号、问号、逗号等位置切分。
+2. 目标长度 20 个字符，最大 28 个字符。
+3. 没有模型边界时按宽度切分。
+4. 不识别连接词词典。
+5. 不人工补标点。
+6. 每条字幕按字符权重分配音频时间。
+7. 同一 ASR 段可以产生多条终稿。
+
+相关文件：`sentence-segmenter.ts`。
+
+### 12.10 事件顺序与 UI
+
+**使用技术**
+
+- Offscreen 单调递增序号
+- Background 串行转发
+- React state
+- 稳定时间轴锚点
+- 文本重叠检测
+
+**为什么使用**
+
+- 异步消息可能让较早时间的终稿晚到。
+- 如果 UI 只按时间重新排序，晚到的字幕会跳到前面，产生“后面的先生成”错觉。
+- 模型处理和消息投递完成时间不同，因此需要显式顺序。
+
+**实现**
+
+1. Offscreen 为每条字幕事件分配 `deliverySequence`。
+2. Offscreen 等待 Background 确认后再发送下一条。
+3. Background 等 Panel 接收后再返回。
+4. Panel 丢弃小于等于已处理序号的事件。
+5. UI 按事件到达顺序追加，不再按视频时间重排。
+6. 时间轴使用视频锚点和播放速率计算。
+7. 时间重叠且文本高度相似的终稿合并。
+8. 用户位于底部时自动滚动，上滚后暂停跟随。
+
+相关文件：`offscreen.ts`、`background.ts`、`panel.tsx`、`caption-text.ts`。
+
+### 12.11 停止与资源释放
+
+**使用技术**
+
+- Flush 消息
+- Promise 等待
+- Worker 终止
+- MediaStream 和 AudioContext 清理
+
+**为什么使用**
+
+- 直接终止 Worker 会丢失最后一个语音段。
+- MediaStream 和 AudioContext 不释放会继续占用扬声器和 CPU。
+
+**实现**
+
+1. Panel 发起停止。
+2. ASR Worker 处理队列中的最后音频并生成尾稿。
+3. ASR 返回 `session.stopped`。
+4. Caption Worker 刷新全部尾稿后返回 `caption.drained`。
+5. Offscreen 发送最终停止事件。
+6. 停止所有音频轨道。
+7. 关闭 AudioContext。
+8. 终止 ASR 和 Caption Worker。
+9. 清理 Offscreen 会话状态。
+
+停止最多等待 2.5 秒，避免异常模型拖住整个会话。
+
+相关文件：`offscreen.ts`、`background.ts`。
+
+## 13. 执行摘要
 
 ```text
 扩展 Panel
