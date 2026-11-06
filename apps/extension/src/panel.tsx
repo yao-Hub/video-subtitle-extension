@@ -713,9 +713,8 @@ function Panel(): React.JSX.Element {
         <div className="hero-row">
           <div>
             <h1>实时中文字幕</h1>
-            <p>只分析当前标签页音频，不读取视频网站字幕。</p>
+            <p>实时识别当前标签页音频，生成中文字幕。</p>
           </div>
-          <span className="language-chip">输出：简体中文</span>
         </div>
       </header>
 
