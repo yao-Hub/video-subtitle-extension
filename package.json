@@ -5,15 +5,20 @@
   "workspaces": [
     "apps/extension"
   ],
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
   "scripts": {
     "build": "npm run build --workspace @video-subtitle/extension",
     "typecheck": "npm run typecheck --workspace @video-subtitle/extension",
     "runtime:fetch": "node scripts/fetch-wasm-runtime.mjs",
     "test:browser": "node scripts/serve-tests.mjs",
     "test:caption": "node --experimental-strip-types --test tests/caption-text.test.mjs",
+    "test:vad": "node --experimental-strip-types --test tests/adaptive-vad.test.mjs",
+    "test:gate": "node --experimental-strip-types --test tests/recognition-gate.test.mjs",
     "test:segmenter": "node --experimental-strip-types --test tests/sentence-segmenter.test.mjs",
     "test:punctuation": "node --experimental-strip-types --test tests/punctuation-engine.test.mjs",
-    "verify": "npm run typecheck && npm run test:caption && npm run test:segmenter && npm run test:punctuation && npm run build"
+    "verify": "npm run typecheck && npm run test:caption && npm run test:vad && npm run test:gate && npm run test:segmenter && npm run test:punctuation && npm run build"
   }
 }
 

@@ -44,7 +44,8 @@
 ├── Offscreen Document：标签页音频捕获
 ├── AudioWorklet：16 kHz PCM 转换
 ├── ASR Web Worker：只输出原始语音识别文本
-├── Caption Web Worker：独立执行分句和 CT-Punc
+├── Punctuation Web Worker：独立执行 CT-Punc
+├── Segmentation Web Worker：独立执行字幕分句
 ├── WebAssembly Runtime：VAD、ASR 与标点模型推理
 └── Bundled Models：随扩展分发的量化模型
 ```
@@ -162,19 +163,25 @@ flowchart TB
         BG[Background Service Worker]
         OFF[Offscreen Document]
         WORKLET[AudioWorklet]
+        VADW[VAD Web Worker]
         ASRW[ASR Web Worker]
-        CAPW[Caption Web Worker]
+        PUNCW[Punctuation Web Worker]
+        SEGW[Segmentation Web Worker]
         WASM[WASM Runtime]
         MODEL[Bundled Chinese Model]
 
         UI <--> BG
         BG <--> OFF
         OFF --> WORKLET
-        WORKLET -->|16 kHz PCM| ASRW
+        WORKLET -->|16 kHz PCM| VADW
+        VADW -->|speech frames| ASRW
+        VADW --> WASM
         ASRW --> WASM
+        MODEL --> VADW
         MODEL --> ASRW
-        ASRW -->|raw ASR text| CAPW
-        CAPW -->|caption events| OFF
+        ASRW -->|raw ASR text| PUNCW
+        PUNCW -->|punctuated text| SEGW
+        SEGW -->|caption events| OFF
         OFF --> BG
         BG --> UI
     end
@@ -186,23 +193,26 @@ flowchart TB
 
 ### 4.1 线程和进程边界
 
-| 执行上下文         | 生命周期       | 主要职责                                     |
-| ------------------ | -------------- | -------------------------------------------- |
-| Popup Panel        | 用户关闭前     | UI、字幕渲染和设置                           |
-| Service Worker     | 可随时休眠     | 标签页、权限和消息协调                       |
-| Offscreen Document | 音频会话期间   | 持有 MediaStream、音频管线、会话状态         |
-| AudioWorklet       | 音频上下文期间 | 低延迟 PCM 转换                              |
-| ASR Worker         | 识别会话期间   | 模型加载、VAD 和原始识别                     |
-| Caption Worker     | 识别会话期间   | 分句、标点恢复和 UI 字幕事件，不参与音频识别 |
+| 执行上下文          | 生命周期       | 主要职责                             |
+| ------------------- | -------------- | ------------------------------------ |
+| Popup Panel         | 用户关闭前     | UI、字幕渲染和设置                   |
+| Service Worker      | 可随时休眠     | 标签页、权限和消息协调               |
+| Offscreen Document  | 音频会话期间   | 持有 MediaStream、音频管线、会话状态 |
+| AudioWorklet        | 音频上下文期间 | 低延迟 PCM 转换                      |
+| VAD Worker          | 识别会话期间   | Silero VAD、人声检测和语音段输出     |
+| ASR Worker          | 识别会话期间   | 模型加载和原始识别                   |
+| Punctuation Worker  | 识别会话期间   | CT-Punc 标点恢复                     |
+| Segmentation Worker | 识别会话期间   | 标点驱动分句和 UI 字幕事件           |
 
 推理不能放在 Service Worker 中，因为 MV3 Service Worker 会休眠，且不适合长时间 CPU 计算。
 
 推理不能放在 AudioWorklet 中，因为 AudioWorklet 需要满足实时音频截止时间，不能在回调中执行模型推理。
 
-ASR 与字幕后处理分别运行在 Offscreen 创建的两个独立 Web Worker 中。
+VAD、ASR、标点与分句分别运行在 Offscreen 创建的四个独立 Web Worker 中。
 
-两者只通过 `RawAsrCaptionEvent` 单向通信。ASR Worker 不导入分句器、不加载标点模型，
-也不依赖 Caption Worker 就绪；Caption Worker 的加载、排队或异常不会停止音频捕获与语音识别。
+VAD Worker 只输出语音开始、语音帧和语音结束事件。ASR Worker 只消费这些语音帧并输出
+`RawAsrCaptionEvent`。Punctuation Worker 只消费原始识别文本，Segmentation Worker 只消费
+带标点文本并输出字幕事件。
 
 ## 5. 组件设计
 
@@ -237,14 +247,14 @@ Service Worker 只保存轻量会话元数据，不保存完整音频或大量�
 
 ### 5.3 Offscreen Document
 
-| 职责            | 说明                                     |
-| --------------- | ---------------------------------------- |
-| 建立音频流      | 使用 Stream ID 调用 `getUserMedia`       |
-| 保持视频声音    | 将捕获流重新连接到音频输出               |
-| 建立 Worklet    | 加载扩展内置 AudioWorklet                |
-| 创建 ASR Worker | 每个会话创建一个推理 Worker              |
-| 管理会话状态    | 分配 sessionId 和 segmentId              |
-| 收尾            | 停止轨道、关闭 AudioContext、终止 Worker |
+| 职责         | 说明                                     |
+| ------------ | ---------------------------------------- |
+| 建立音频流   | 使用 Stream ID 调用 `getUserMedia`       |
+| 保持视频声音 | 将捕获流重新连接到音频输出               |
+| 建立 Worklet | 加载扩展内置 AudioWorklet                |
+| 创建 Worker  | 每个会话创建 VAD、ASR、标点和分句 Worker |
+| 管理会话状态 | 分配 sessionId 和 segmentId              |
+| 收尾         | 停止轨道、关闭 AudioContext、终止 Worker |
 
 Offscreen Document 必须同时声明：
 
@@ -270,31 +280,47 @@ AudioWorklet 只处理音频格式，不进行语音识别。
 
 音频帧不得序列化为 JSON。
 
-### 5.5 ASR Web Worker
+### 5.5 VAD Web Worker
 
-| 职责         | 说明                                    |
-| ------------ | --------------------------------------- |
-| WASM 初始化  | 从扩展资源加载本地 WASM 运行时          |
-| 模型加载     | 读取 tokens 和 int8 ONNX 文件           |
-| VAD          | 使用 Silero VAD v5 的人声概率切分语音段 |
-| 流式识别     | 对当前语音段持续解码                    |
-| 原始临时结果 | 按节流间隔输出未分句文本                |
-| 原始终稿     | 在语音结束时输出未分句文本              |
-| 资源释放     | 会话停止后释放模型和会话内存            |
+| 职责         | 说明                                                             |
+| ------------ | ---------------------------------------------------------------- |
+| 模型加载     | 从扩展资源加载 Silero VAD v5 ONNX 模型                           |
+| 候选语音处理 | 将 20 ms PCM 帧累积为 32 ms VAD 块                               |
+| 人声判断     | 输出每个 VAD 块的人声概率                                        |
+| 语音段管理   | 维护开始阈值、结束阈值、前置缓冲和静音                           |
+| 语音帧输出   | 将 `speech-start`、`speech-frame`、`speech-end` 发送给 Offscreen |
 
-### 5.6 Caption Web Worker
+### 5.6 ASR Web Worker
+
+| 职责         | 说明                           |
+| ------------ | ------------------------------ |
+| WASM 初始化  | 从扩展资源加载本地 WASM 运行时 |
+| 模型加载     | 读取 tokens 和 int8 ONNX 文件  |
+| 流式识别     | 对当前语音段持续解码           |
+| 原始临时结果 | 按节流间隔输出未分句文本       |
+| 原始终稿     | 在语音结束时输出未分句文本     |
+| 资源释放     | 会话停止后释放模型和会话内存   |
+
+### 5.7 Punctuation Web Worker
 
 | 职责     | 说明                                                                |
 | -------- | ------------------------------------------------------------------- |
 | 输入     | ASR Worker 输出的原始临时和终稿文本                                 |
 | 独立启动 | 与采音建立并行初始化，不阻塞 ASR 就绪后的音频采集                   |
-| 流式分句 | 对临时文本生成稳定前缀和可变尾句                                    |
 | CT-Punc  | 使用 ONNX Runtime Web 为实时预览和终稿恢复标点                      |
-| 模型边界 | 根据 CT-Punc 输出的句末和句中标点决定字幕切分位置                   |
-| 宽度兜底 | 模型没有给出可用边界时，才按目标长度和最大长度切分                  |
 | 实时合并 | 模型推理期间只保留最新待处理预览，避免旧预览排队造成延迟            |
 | 原始透传 | 后处理未就绪或不可用时，Offscreen 直接把原始 ASR 结果转换为 UI 字幕 |
 | 故障隔离 | 后处理异常不会停止、回滚或重复调用 ASR Worker                       |
+
+### 5.8 Segmentation Web Worker
+
+| 职责     | 说明                                           |
+| -------- | ---------------------------------------------- |
+| 输入     | Punctuation Worker 输出的带标点文本            |
+| 流式分句 | 对临时文本生成字幕分段                         |
+| 模型边界 | 优先使用 CT-Punc 输出的标点作为字幕边界        |
+| 宽度兜底 | 没有模型边界时按目标长度和最大长度切分         |
+| 输出     | `caption.preview` 和一条或多条 `caption.final` |
 
 模型和 WASM 只从 `chrome-extension://` 自身资源加载。
 
@@ -430,40 +456,41 @@ dist/runtime/ct-punc/
 1. 用户点击“启动中文字幕”。
 2. Popup Panel 先检查是否已经有活动会话。
 3. Background 申请标签页音频流。
-4. Offscreen Document 创建 ASR Worker。
-5. ASR Worker 从扩展资源读取 runtime JS 并加载 WASM。
-6. ASR Worker 读取 ASR tokens 和 int8 模型并创建 OnlineRecognizer。
-7. ASR Worker 读取 Silero VAD 模型并创建 ONNX 会话。
-8. ASR Worker 在 ASR 和 VAD 都就绪后返回 `worker.ready`。
-9. Offscreen 在后台启动 Caption Worker，同时继续建立 MediaStream 和音频管线。
-10. Caption Worker 加载 ONNX Runtime Web、CT-Punc 模型和词表，并返回 `caption.ready`。
-11. Caption Worker 就绪前，原始 ASR 字幕直接进入 UI；就绪后，原始字幕再送入 Caption Worker。
+4. Offscreen Document 创建 VAD Worker 和 ASR Worker。
+5. VAD Worker 加载 ONNX Runtime Web 和 Silero VAD 模型。
+6. ASR Worker 从扩展资源读取 Sherpa-ONNX runtime 并加载 WASM。
+7. ASR Worker 读取 ASR tokens 和 int8 模型并创建 OnlineRecognizer。
+8. VAD Worker 和 ASR Worker 分别返回 ready。
+9. Offscreen 在后台启动 Punctuation Worker 和 Segmentation Worker，同时继续建立 MediaStream 和音频管线。
+10. Punctuation Worker 加载 ONNX Runtime Web、CT-Punc 模型和词表。
+11. Segmentation Worker 初始化标点优先分句器。
+12. 两个后处理 Worker 就绪前，原始 ASR 字幕直接进入 UI；都就绪后，文本依次进入标点和分句阶段。
 
-采音只等待 ASR Worker 就绪，不等待 Caption Worker。ASR 模型加载完成前不得开始消耗音频，
+采音等待 VAD Worker 和 ASR Worker 同时就绪，不等待标点和分句 Worker。模型加载完成前不得开始消耗音频，
 避免无意义缓冲；字幕后处理初始化不属于这个前置条件。
 
 ## 8. 音频捕获流程
 
 ### 8.1 启动
 
-| 步骤 | 组件        | 操作                                            |
-| ---- | ----------- | ----------------------------------------------- |
-| 1    | Popup Panel | 用户点击启动                                    |
-| 2    | Background  | 获取当前标签页 ID                               |
-| 3    | Background  | 注入视频检测脚本                                |
-| 4    | Background  | 确认页面存在 `<video>`                          |
-| 5    | Background  | 申请 tabCapture Stream ID                       |
-| 6    | Background  | 创建 Offscreen Document                         |
-| 7    | Offscreen   | 创建 ASR Worker                                 |
-| 8    | ASR Worker  | 初始化 runtime 和模型                           |
-| 9    | ASR Worker  | 返回 `worker.ready`                             |
-| 10   | Offscreen   | 后台启动 Caption Worker，并并行建立 MediaStream |
-| 11   | Offscreen   | 建立 AudioContext 和 AudioWorklet               |
-| 12   | Offscreen   | 连接播放监听和 ASR 采集分支                     |
-| 13   | Popup Panel | 收到 `session.started`                          |
+| 步骤 | 组件        | 操作                                          |
+| ---- | ----------- | --------------------------------------------- |
+| 1    | Popup Panel | 用户点击启动                                  |
+| 2    | Background  | 获取当前标签页 ID                             |
+| 3    | Background  | 注入视频检测脚本                              |
+| 4    | Background  | 确认页面存在 `<video>`                        |
+| 5    | Background  | 申请 tabCapture Stream ID                     |
+| 6    | Background  | 创建 Offscreen Document                       |
+| 7    | Offscreen   | 创建 VAD Worker 和 ASR Worker                 |
+| 8    | Worker      | 分别初始化 VAD 模型和 ASR 模型                |
+| 9    | Worker      | 分别返回 ready                                |
+| 10   | Offscreen   | 后台启动标点和分句 Worker，并建立 MediaStream |
+| 11   | Offscreen   | 建立 AudioContext 和 AudioWorklet             |
+| 12   | Offscreen   | 连接播放监听和 VAD 采集分支                   |
+| 13   | Popup Panel | 收到 `session.started`                        |
 
-Caption Worker 的 `caption.ready` 不是采音前置条件。其初始化期间产生的原始字幕由
-Offscreen 直接转换为 `caption.preview` 或 `caption.final`，不会暂停或阻塞识别。
+标点和分句 Worker 不是采音前置条件。其初始化期间产生的原始字幕由 Offscreen
+直接转换为 `caption.preview` 或 `caption.final`，不会暂停或阻塞识别。
 
 ### 8.2 播放监听
 
@@ -472,7 +499,7 @@ Offscreen 直接转换为 `caption.preview` 或 `caption.final`，不会暂停�
 ```text
 MediaStreamSource
 ├── monitorGain(1.0) -> AudioContext.destination
-└── AudioWorklet -> PCM -> ASR Worker
+└── AudioWorklet -> PCM -> VAD Worker -> speech frames -> ASR Worker
 ```
 
 不得把麦克风采集当作输入，也不得把识别音频再次扬声器播放。
@@ -512,11 +539,34 @@ type AsrStart = {
   type: "asr.start";
   sessionId: string;
 };
+
+type VadStart = {
+  type: "vad.start";
+  sessionId: string;
+};
+
+type SpeechStart = {
+  type: "asr.speech-start";
+  recognitionEpoch: number;
+  startUs: number;
+};
+
+type SpeechFrame = {
+  type: "asr.speech-frame";
+  samples: ArrayBuffer;
+  startUs: number;
+  endUs: number;
+};
+
+type SpeechEnd = {
+  type: "asr.speech-end";
+  endUs: number;
+};
 ```
 
 ### 9.2 音频消息
 
-Worker 通过 `MessagePort` 接收：
+AudioWorklet 帧先发送给 VAD Worker；VAD Worker 命中的语音帧再发送给 ASR Worker。
 
 ```typescript
 type AudioFrame = {
@@ -532,6 +582,8 @@ type AudioFrame = {
 ```typescript
 type CaptionPreviewEvent = {
   type: "caption.preview";
+  deliverySequence: number;
+  recognitionEpoch: number;
   sessionId: string;
   parentSegmentId: string;
   parts: Array<{
@@ -539,13 +591,14 @@ type CaptionPreviewEvent = {
     text: string;
     audioStartUs: number;
     audioEndUs: number;
-    stable: boolean;
   }>;
   processingMs: number;
 };
 
 type FinalCaptionEvent = {
   type: "caption.final";
+  deliverySequence: number;
+  recognitionEpoch: number;
   sessionId: string;
   segmentId: string;
   parentSegmentId: string;
@@ -560,13 +613,15 @@ type FinalCaptionEvent = {
 
 1. 临时预览整体替换同一 `parentSegmentId` 的上一次预览。
 2. 终稿写入后清除同一段的全部临时预览。
-3. 不同会话的旧事件必须丢弃。
-4. 文本为空时不发送字幕事件。
-5. 字幕事件通过结构化克隆传递，不共享 DOM 引用。
-6. ASR Worker 只能发送 `asr.caption`，不能直接发送 `caption.preview` 或 `caption.final`。
-7. Caption Worker 只能消费 `asr.caption`，不能控制 ASR 开始、停止或重置。
-8. Caption 事件在 Offscreen 分配单调递增的 `deliverySequence`。
-9. Offscreen 到 Background、Background 到 Panel 的消息必须串行投递，Panel 丢弃旧序号。
+3. 暂停、恢复和跳转时递增 `recognitionEpoch`，UI 拒绝旧代次结果。
+4. `deliverySequence` 用于过滤乱序投递，`recognitionEpoch` 用于隔离重识别结果。
+5. 不同会话的旧事件必须丢弃。
+6. 文本为空时不发送字幕事件。
+7. 字幕事件通过结构化克隆传递，不共享 DOM 引用。
+8. ASR Worker 只能发送 `asr.caption`，不能直接发送 `caption.preview` 或 `caption.final`。
+9. Punctuation Worker 只消费 `asr.caption`，Segmentation Worker 只消费带标点文本。
+10. 字幕事件在 Offscreen 分配单调递增的 `deliverySequence`。
+11. Offscreen 到 Background、Background 到 Panel 的消息必须串行投递，Panel 丢弃旧序号。
 
 ## 10. 状态机
 
@@ -614,23 +669,34 @@ uninitialized
 | 参数             |             默认值 |
 | ---------------- | -----------------: |
 | VAD 音频块       | 32 ms，512 samples |
-| 人声概率开始阈值 |                0.5 |
-| 人声概率结束阈值 |               0.35 |
+| 人声概率开始阈值 | 自适应；预热 `0.5` |
+| 人声概率结束阈值 | 自适应；预热 `0.35` |
 | 连续语音启动     | 2 个 VAD 块，64 ms |
 | 前置缓冲         |             300 ms |
 | 结束静音         |             650 ms |
 | 最长语音段       |              12 秒 |
 | 临时结果间隔     |             250 ms |
 
-所有参数必须集中在一个不可变配置对象中，不散落在业务代码里。
+时间参数定义在对应 Worker 顶部；自适应阈值由 `adaptive-vad.ts` 统一计算。
+
+预热结束后，门限根据最近 160 个非语音概率样本自适应计算：
+
+| 指标       | 计算方式                                                     |
+| ---------- | ------------------------------------------------------------ |
+| 噪声底     | 非语音历史样本的第 20 百分位                                 |
+| 信号峰值   | 非语音历史样本的第 90 百分位                                 |
+| 开始阈值   | `noiseFloor + max(0.22, dynamicRange × 0.55)`                |
+| 结束阈值   | `noiseFloor + dynamicRange × 0.25`                           |
+| 数值约束   | 开始阈值 `0.3～0.85`；结束阈值至少比开始阈值低 `0.08`        |
+| 学习冻结   | 人声活动期间不写入噪声历史                                   |
 
 ### 11.2 后续升级
 
 后续可评估：
 
 - FSMN-VAD 的浏览器兼容版本。
-- 不同语言的 VAD 阈值基准。
-- Silero VAD 与能量阈值双门限。
+- 不同语言的 VAD 自适应冷启动策略。
+- 输出完整语音段而不是逐块概率的 VAD 模型。
 
 替换 VAD 时保持 `VAD` 接口和字幕协议不变。
 
@@ -640,13 +706,13 @@ uninitialized
 2. Silero VAD 输出每个音频块的人声概率。
 3. 累计最近 300 ms 音频作为前置缓冲。
 4. 连续两个 VAD 块达到开始阈值后创建 `segmentId`。
-5. 将前置缓冲和后续音频送入 OnlineRecognizer。
-6. 每隔 250 ms 解码当前识别状态。
+5. VAD Worker 将语音开始、前置缓冲和语音帧发送给 ASR Worker。
+6. ASR Worker 每隔 250 ms 解码当前识别状态。
 7. 若文本发生变化，ASR Worker 发送原始 `asr.caption` 预览事件。
-8. Caption Worker 将原始预览转换为 `caption.preview` 分句批次；异常时 Offscreen 直接透传原始预览。
+8. Punctuation Worker 恢复标点，Segmentation Worker 将带标点预览转换为 `caption.preview`。
 9. 人声概率低于结束阈值并持续 650 ms 后停止当前段。
 10. ASR Worker 发送该段的原始 `asr.caption` 终稿事件。
-11. Caption Worker 优先按 CT-Punc 恢复的句末、句中标点切分终稿。
+11. Segmentation Worker 优先按 CT-Punc 恢复的句末、句中标点切分终稿。
 12. 模型没有给出可用边界时，才按目标字符数和最大字符数兜底切分。
 13. 字幕文本不人工补标点，标点只来自 CT-Punc 或原始识别结果。
 14. 每条字幕按字符权重分配原语音段的时间范围，并发送带 `parentSegmentId` 的 `caption.final`。
@@ -665,17 +731,14 @@ uninitialized
 对我做了介绍
 ```
 
-每次临时识别结果更新时，Caption Worker 先调用 CT-Punc 恢复当前文本的标点，
-再根据模型标点把文本切分为一组临时字幕，
+每次临时识别结果更新时，Punctuation Worker 先调用 CT-Punc 恢复标点，
+Segmentation Worker 再根据模型标点把文本切分为一组临时字幕，
 通过 `caption.preview` 一次性替换上一组预览。UI 使用黄色虚线样式显示，
 并明确标记“实时”。
 
-为了减少视觉跳动，预览采用“稳定前缀 + 可变尾句”：
-
-1. 除最后一个分句外，已显示前缀在后续修订中保持文本不变。
-2. 最后一条临时字幕随 ASR 结果增长或修订。
-3. 出现新的稳定边界时，只追加新的尾句。
-4. 终稿到达后统一清除临时前缀和尾句，再写入最终分句。
+每次新预览到达时，Segmentation Worker 根据当前完整 ASR 文本重新分句。UI 删除该
+`parentSegmentId` 的原预览组，再一次性写入新分句，避免同一语音段同时保留新旧文本。
+终稿到达后清除该段全部临时字幕并写入最终分句。
 
 ### 12.2 终稿字幕
 
@@ -714,7 +777,7 @@ audioTimestampUs = 累计 sample 数 / 16,000 × 1,000,000
 
 ### 13.2 视频时间
 
-页面脚本每秒读取：
+页面脚本监听播放器状态变化，并在下一个字幕区间边界读取：
 
 ```json
 {
@@ -730,7 +793,8 @@ videoTimeMs = anchorVideoTimeMs
 ```
 
 锚点在开始、暂停恢复、播放器缓冲、跳转和倍速变化时重新建立。正常播放期间
-每秒查询视频状态只用于检测变化，不重新计算所有已显示字幕的时间。
+播放、暂停、跳转和倍速变化会立即上报状态；正常播放时只调度下一个字幕区间边界，
+不进行固定间隔轮询，也不重新计算所有已显示字幕的时间。
 
 ### 13.3 暂停和拖动
 
@@ -779,7 +843,10 @@ videoTimeMs = anchorVideoTimeMs
 ### 14.3 交互
 
 - 终稿字幕可点击。
-- 跳转后重置 ASR 当前分段，并过滤已覆盖时间段中的重复终稿。
+- 点击任意字幕只调整视频时间，不直接决定是否识别。
+- 当前视频时间落在任意已生成字幕区间内时暂停识别。
+- 当前视频时间离开所有已生成字幕区间后恢复识别。
+- 已生成字幕覆盖的区间在回放时跳过，未覆盖的历史空档继续识别。
 - 临时字幕不可跳转。
 - 字幕列表在用户位于底部时自动滚动到最新字幕。
 - 用户手动向上滚动后暂停自动滚动，并显示“回到最新”按钮。
@@ -857,6 +924,7 @@ Chrome 或 Edge 最新稳定版
 | MediaStream  | 会话开始到停止        |
 | AudioContext | 会话开始到停止        |
 | AudioWorklet | AudioContext 生命周期 |
+| VAD Worker   | 模型加载到会话停止    |
 | ASR Worker   | 模型加载到会话停止    |
 | WASM 实例    | Worker 生命周期       |
 | 模型数据     | Worker 生命周期       |
@@ -931,8 +999,10 @@ panel.html
 panel.js
 panel.css
 audio-capture-processor.js
+vad-worker.js
 asr-worker.js
-caption-worker.js
+punctuation-worker.js
+segmentation-worker.js
 runtime/sherpa-onnx/*
 runtime/vad/*
 runtime/ct-punc/*

@@ -4,6 +4,8 @@ import type {
   OffscreenRequestMessage,
   PanelContext,
   PanelEventMessage,
+  PanelVideoStateMessage,
+  PageVideoStateMessage,
   RuntimeResponse,
   SessionRuntimeState,
   VideoState
@@ -15,6 +17,7 @@ let runtimeState: SessionRuntimeState = {
   startedAtEpochMs: 0
 };
 let panelWindowId: number | null = null;
+let sessionOperationQueue = Promise.resolve();
 const PANEL_WINDOW_KEY = 'panelWindowId';
 const RUNTIME_STATE_KEY = 'runtimeState';
 const runtimeStateReady = chrome.storage.session.get(RUNTIME_STATE_KEY)
@@ -37,6 +40,15 @@ async function setPanelWindowId(windowId: number | null): Promise<void> {
     ? chrome.storage.session.remove(PANEL_WINDOW_KEY)
     : chrome.storage.session.set({ [PANEL_WINDOW_KEY]: windowId });
   await operation.catch((error) => console.error(error));
+}
+
+function queueSessionOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = sessionOperationQueue.then(operation, operation);
+  sessionOperationQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
 function success<T>(data: T): RuntimeResponse<T> {
@@ -66,18 +78,9 @@ async function sendPageRequest<T>(
 }
 
 async function getVideoState(tabId: number): Promise<VideoState> {
-  try {
-    return await sendPageRequest<VideoState>(tabId, {
-      type: 'page.get-video-state'
-    });
-  } catch {
-    return {
-      hasVideo: false,
-      currentTime: 0,
-      paused: true,
-      playbackRate: 1
-    };
-  }
+  return sendPageRequest<VideoState>(tabId, {
+    type: 'page.get-video-state'
+  });
 }
 
 async function ensureOffscreenDocument(): Promise<void> {
@@ -263,9 +266,9 @@ async function handleRequest(
     case 'panel.get-context':
       return success(await getPanelContext(request.sourceTabId));
     case 'panel.start':
-      return startSession(request.sourceTabId);
+      return queueSessionOperation(() => startSession(request.sourceTabId));
     case 'panel.stop':
-      return stopSession();
+      return queueSessionOperation(stopSession);
     case 'panel.get-runtime-state':
       await runtimeStateReady;
       return success(runtimeState);
@@ -287,6 +290,29 @@ async function handleRequest(
       }
       return response;
     }
+    case 'panel.pause-recognition':
+    case 'panel.resume-recognition':
+      if (runtimeState.running) {
+        await chrome.runtime.sendMessage({
+          target: 'offscreen',
+          request: {
+            type: request.type === 'panel.pause-recognition'
+              ? 'capture.pause'
+              : 'capture.resume'
+          }
+        } satisfies OffscreenRequestMessage);
+      }
+      return success(runtimeState);
+    case 'panel.schedule-video-boundary':
+      await sendPageRequest(
+        request.tabId,
+        {
+          type: 'page.schedule-boundary',
+          videoId: request.videoId,
+          boundaryVideoTimeMs: request.boundaryVideoTimeMs
+        }
+      );
+      return success(runtimeState);
   }
 }
 
@@ -303,12 +329,37 @@ chrome.windows.onRemoved.addListener((windowId) => {
         return;
       }
       await setPanelWindowId(null);
-      await stopSession();
+      await queueSessionOperation(stopSession);
     })
     .catch((error) => console.error(error));
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void queueSessionOperation(async () => {
+    await runtimeStateReady;
+    if (runtimeState.running && runtimeState.sourceTabId === tabId) {
+      await stopSession();
+    }
+  }).catch((error) => console.error(error));
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    message?.target === 'background'
+    && message.type === 'page.video-state'
+    && sender.tab?.id
+  ) {
+    const panelMessage: PanelVideoStateMessage = {
+      target: 'panel',
+      type: 'video.state',
+      tabId: sender.tab.id,
+      state: (message as PageVideoStateMessage).state
+    };
+    void chrome.runtime.sendMessage(panelMessage).catch(() => undefined);
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (
     message?.target === 'background'
     && message.type === 'inference.event'
@@ -316,10 +367,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   ) {
     const event = message.event as InferenceEvent;
     if (event.type === 'session.error' && !event.recoverable) {
-      void setRuntimeState({
-        running: false,
-        sourceTabId: 0,
-        startedAtEpochMs: 0
+      void queueSessionOperation(async () => {
+        await runtimeStateReady;
+        await setRuntimeState({
+          running: false,
+          sourceTabId: 0,
+          startedAtEpochMs: 0
+        });
       }).catch((error) => console.error(error));
     }
     const panelMessage: PanelEventMessage = {

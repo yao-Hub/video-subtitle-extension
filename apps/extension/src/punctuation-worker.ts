@@ -1,17 +1,14 @@
 import type {
-  CaptionPreviewEvent,
-  CaptionWorkerEvent,
-  CaptionWorkerRequest,
-  FinalCaptionEvent,
+  PunctuatedCaptionEvent,
+  PunctuationWorkerEvent,
+  PunctuationWorkerRequest,
   RawAsrCaptionEvent
 } from '../../../packages/protocol/src/index';
-
 import {
   applyPunctuation,
   PUNCTUATION_LABELS,
   tokenizePunctuationText
 } from './punctuation-engine';
-import { splitChineseCaption } from './sentence-segmenter';
 
 interface OrtTensor {
   readonly data: Float32Array | Int32Array;
@@ -48,10 +45,18 @@ declare const ort: OrtRuntime;
 declare function importScripts(...urls: string[]): void;
 
 const puncRuntimeBase = new URL('runtime/ct-punc/', self.location.href).href;
-const ortRuntimeBase = new URL('runtime/onnxruntime-web/', self.location.href).href;
+const ortRuntimeBase = new URL(
+  'runtime/onnxruntime-web/',
+  self.location.href
+).href;
+
 let punctuationSession: OrtSession | null = null;
 let punctuationTokenIds: Map<string, number> | null = null;
 let punctuationUnknownId = 0;
+
+function postEvent(event: PunctuationWorkerEvent): void {
+  self.postMessage(event);
+}
 
 async function loadPunctuationModel(): Promise<void> {
   importScripts(new URL('ort.wasm.min.js', ortRuntimeBase).toString());
@@ -109,6 +114,7 @@ async function addPunctuation(text: string): Promise<string> {
     console.error('Punctuation inference failed; using raw ASR text', error);
     return text;
   }
+
   const logits = output.logits?.data;
   if (!(logits instanceof Float32Array)) {
     return text;
@@ -118,7 +124,11 @@ async function addPunctuation(text: string): Promise<string> {
   for (let index = 0; index < words.length; index += 1) {
     let bestClass = 0;
     let bestScore = Number.NEGATIVE_INFINITY;
-    for (let classIndex = 0; classIndex < PUNCTUATION_LABELS.length; classIndex += 1) {
+    for (
+      let classIndex = 0;
+      classIndex < PUNCTUATION_LABELS.length;
+      classIndex += 1
+    ) {
       const score = logits[index * PUNCTUATION_LABELS.length + classIndex];
       if (score !== undefined && score > bestScore) {
         bestScore = score;
@@ -130,83 +140,35 @@ async function addPunctuation(text: string): Promise<string> {
   return applyPunctuation(words, predicted);
 }
 
-async function initializePostProcessing(): Promise<void> {
+async function initialize(): Promise<void> {
   try {
     await loadPunctuationModel();
   } catch (error) {
     console.error('Failed to initialize punctuation model', error);
     postEvent({
-      type: 'caption.error',
+      type: 'punctuation.error',
       error: error instanceof Error ? error.message : '中文标点模型加载失败'
     });
   }
-  postEvent({ type: 'caption.ready' });
+  postEvent({ type: 'punctuation.ready' });
 }
 
-function postEvent(event: CaptionWorkerEvent): void {
-  self.postMessage(event);
-}
-
-async function createPreview(
+async function punctuate(
   event: RawAsrCaptionEvent
-): Promise<CaptionPreviewEvent> {
-  const punctuatedText = await addPunctuation(event.text);
-  const parts = splitChineseCaption(
-    punctuatedText,
-    event.audioStartUs,
-    event.audioEndUs
-  );
-
+): Promise<PunctuatedCaptionEvent> {
   return {
-    type: 'caption.preview',
+    kind: event.kind,
+    recognitionEpoch: event.recognitionEpoch,
     sessionId: event.sessionId,
-    parentSegmentId: event.segmentId,
-    parts: parts.map((part, index) => ({
-      segmentId: `${event.segmentId}_p${index + 1}`,
-      text: part.text,
-      audioStartUs: part.audioStartUs,
-      audioEndUs: part.audioEndUs,
-      stable: false
-    })),
+    segmentId: event.segmentId,
+    audioStartUs: event.audioStartUs,
+    audioEndUs: event.audioEndUs,
+    text: await addPunctuation(event.text),
     processingMs: event.processingMs
   };
 }
 
-async function createFinal(
-  event: RawAsrCaptionEvent
-): Promise<FinalCaptionEvent[]> {
-  const punctuatedText = await addPunctuation(event.text);
-  const parts = splitChineseCaption(
-    punctuatedText,
-    event.audioStartUs,
-    event.audioEndUs
-  );
-
-  return parts.map((part, index) => ({
-    type: 'caption.final',
-    sessionId: event.sessionId,
-    segmentId: `${event.segmentId}_c${index + 1}`,
-    parentSegmentId: event.segmentId,
-    audioStartUs: part.audioStartUs,
-    audioEndUs: part.audioEndUs,
-    text: part.text,
-    processingMs: event.processingMs
-  }));
-}
-
-async function handleRawCaption(event: RawAsrCaptionEvent): Promise<void> {
-  if (event.kind === 'preview') {
-    postEvent(await createPreview(event));
-    return;
-  }
-  for (const finalEvent of await createFinal(event)) {
-    postEvent(finalEvent);
-  }
-}
-
-void initializePostProcessing();
-
-const pendingRequests: CaptionWorkerRequest[] = [];
+const pendingRequests: PunctuationWorkerRequest[] = [];
 let processing = false;
 
 async function processRequests(): Promise<void> {
@@ -215,15 +177,18 @@ async function processRequests(): Promise<void> {
     while (pendingRequests.length) {
       const request = pendingRequests.shift()!;
       try {
-        if (request.type === 'caption.raw') {
-          await handleRawCaption(request.event);
+        if (request.type === 'punctuation.raw') {
+          postEvent({
+            type: 'punctuation.result',
+            event: await punctuate(request.event)
+          });
         } else {
-          postEvent({ type: 'caption.drained' });
+          postEvent({ type: 'punctuation.drained' });
         }
       } catch (error) {
         postEvent({
-          type: 'caption.error',
-          error: error instanceof Error ? error.message : '字幕后处理失败'
+          type: 'punctuation.error',
+          error: error instanceof Error ? error.message : '标点恢复失败'
         });
       }
     }
@@ -232,25 +197,25 @@ async function processRequests(): Promise<void> {
   }
 }
 
-function enqueueRequest(request: CaptionWorkerRequest): void {
+function enqueue(request: PunctuationWorkerRequest): void {
   if (
-    request.type === 'caption.raw'
+    request.type === 'punctuation.raw'
     && request.event.kind === 'preview'
   ) {
     const previous = pendingRequests.at(-1);
     if (
-      previous?.type === 'caption.raw'
+      previous?.type === 'punctuation.raw'
       && previous.event.kind === 'preview'
     ) {
       pendingRequests[pendingRequests.length - 1] = request;
     } else {
       pendingRequests.push(request);
     }
-  } else if (request.type === 'caption.raw') {
+  } else if (request.type === 'punctuation.raw') {
     for (let index = pendingRequests.length - 1; index >= 0; index -= 1) {
       const pending = pendingRequests[index];
       if (
-        pending?.type === 'caption.raw'
+        pending?.type === 'punctuation.raw'
         && pending.event.kind === 'preview'
         && pending.event.segmentId === request.event.segmentId
       ) {
@@ -267,6 +232,7 @@ function enqueueRequest(request: CaptionWorkerRequest): void {
   }
 }
 
-self.onmessage = (event: MessageEvent<CaptionWorkerRequest>) => {
-  enqueueRequest(event.data);
+void initialize();
+self.onmessage = (event: MessageEvent<PunctuationWorkerRequest>) => {
+  enqueue(event.data);
 };

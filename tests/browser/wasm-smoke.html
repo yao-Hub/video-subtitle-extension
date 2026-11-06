@@ -36,19 +36,33 @@
       }
 
       const asrWorker = new Worker('/dist/asr-worker.js');
-      const captionWorker = new Worker('/dist/caption-worker.js');
+      const vadWorker = new Worker('/dist/vad-worker.js');
+      const punctuationWorker = new Worker('/dist/punctuation-worker.js');
+      const segmentationWorker = new Worker('/dist/segmentation-worker.js');
       let asrReady = false;
-      let captionReady = false;
+      let vadReady = false;
+      let punctuationReady = false;
+      let segmentationReady = false;
       let started = false;
       let stopped = false;
 
       async function startRecognition() {
-        if (started || !asrReady || !captionReady) {
+        if (
+          started
+          || !asrReady
+          || !vadReady
+          || !punctuationReady
+          || !segmentationReady
+        ) {
           return;
         }
         started = true;
         asrWorker.postMessage({
           type: 'asr.start',
+          sessionId: 'browser-smoke'
+        });
+        vadWorker.postMessage({
+          type: 'vad.start',
           sessionId: 'browser-smoke'
         });
 
@@ -63,24 +77,52 @@
             startByte + frameSamples * 2
           );
           const frame = pcm.slice(startByte, endByte);
-          asrWorker.postMessage({
+          vadWorker.postMessage({
             type: 'audio.frame',
-            timestampUs: Math.round(offset / 16 * 1000),
             samples: frame
           }, [frame]);
         }
-        asrWorker.postMessage({ type: 'asr.stop' });
+        vadWorker.postMessage({ type: 'vad.stop' });
       }
 
-      captionWorker.onerror = (event) => {
-        append(`caption-worker.error: ${event.message}`);
+      punctuationWorker.onerror = (event) => {
+        append(`punctuation-worker.error: ${event.message}`);
         document.body.dataset.result = 'error';
       };
-      captionWorker.onmessage = (event) => {
+      punctuationWorker.onmessage = (event) => {
         const message = event.data;
-        if (message.type === 'caption.ready') {
-          append('caption-worker.ready');
-          captionReady = true;
+        if (message.type === 'punctuation.ready') {
+          append('punctuation-worker.ready');
+          punctuationReady = true;
+          void startRecognition();
+          return;
+        }
+        if (message.type === 'punctuation.result') {
+          segmentationWorker.postMessage({
+            type: 'segmentation.punctuated',
+            event: message.event
+          });
+          return;
+        }
+        if (message.type === 'punctuation.drained') {
+          segmentationWorker.postMessage({ type: 'segmentation.flush' });
+          return;
+        }
+        if (message.type === 'punctuation.error') {
+          append(`punctuation.error: ${message.error}`);
+          document.body.dataset.result = 'error';
+        }
+      };
+
+      segmentationWorker.onerror = (event) => {
+        append(`segmentation-worker.error: ${event.message}`);
+        document.body.dataset.result = 'error';
+      };
+      segmentationWorker.onmessage = (event) => {
+        const message = event.data;
+        if (message.type === 'segmentation.ready') {
+          append('segmentation-worker.ready');
+          segmentationReady = true;
           void startRecognition();
           return;
         }
@@ -93,12 +135,12 @@
           append(`final: ${message.text}`);
           return;
         }
-        if (message.type === 'caption.error') {
-          append(`caption.error: ${message.error}`);
+        if (message.type === 'segmentation.error') {
+          append(`segmentation.error: ${message.error}`);
           document.body.dataset.result = 'error';
           return;
         }
-        if (message.type === 'caption.drained' && stopped) {
+        if (message.type === 'segmentation.drained' && stopped) {
           append('session.stopped');
           document.body.dataset.result = finalText ? 'success' : 'empty';
         }
@@ -108,6 +150,52 @@
         append(`worker.error: ${event.message}`);
         document.body.dataset.result = 'error';
       };
+
+      vadWorker.onerror = (event) => {
+        append(`vad-worker.error: ${event.message}`);
+        document.body.dataset.result = 'error';
+      };
+      vadWorker.onmessage = (event) => {
+        const message = event.data;
+        if (message.type === 'vad.ready') {
+          append('vad-worker.ready');
+          vadReady = true;
+          void startRecognition();
+          return;
+        }
+        if (message.type === 'vad.speech-start') {
+          asrWorker.postMessage({
+            type: 'asr.speech-start',
+            startUs: message.startUs
+          });
+          return;
+        }
+        if (message.type === 'vad.speech-frame') {
+          asrWorker.postMessage({
+            type: 'asr.speech-frame',
+            samples: message.samples,
+            startUs: message.startUs,
+            endUs: message.endUs
+          }, [message.samples]);
+          return;
+        }
+        if (message.type === 'vad.speech-end') {
+          asrWorker.postMessage({
+            type: 'asr.speech-end',
+            endUs: message.endUs
+          });
+          return;
+        }
+        if (message.type === 'vad.stopped') {
+          asrWorker.postMessage({ type: 'asr.stop' });
+          return;
+        }
+        if (message.type === 'vad.error') {
+          append(`vad.error: ${message.error}`);
+          document.body.dataset.result = 'error';
+        }
+      };
+
       asrWorker.onmessage = (event) => {
         const message = event.data;
         if (message.type === 'worker.error') {
@@ -122,8 +210,8 @@
           return;
         }
         if (message.type === 'asr.caption') {
-          captionWorker.postMessage({
-            type: 'caption.raw',
+          punctuationWorker.postMessage({
+            type: 'punctuation.raw',
             event: message
           });
           return;
@@ -139,7 +227,7 @@
         }
         if (message.type === 'session.stopped') {
           stopped = true;
-          captionWorker.postMessage({ type: 'caption.flush' });
+          punctuationWorker.postMessage({ type: 'punctuation.flush' });
         }
       };
     </script>

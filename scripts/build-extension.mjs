@@ -22,8 +22,10 @@ await build({
     background: path.join(sourceDir, 'background.ts'),
     'page-bridge': path.join(sourceDir, 'page-bridge.ts'),
     offscreen: path.join(sourceDir, 'offscreen.ts'),
+    'vad-worker': path.join(sourceDir, 'vad-worker.ts'),
     'asr-worker': path.join(sourceDir, 'asr-worker.ts'),
-    'caption-worker': path.join(sourceDir, 'caption-worker.ts'),
+    'punctuation-worker': path.join(sourceDir, 'punctuation-worker.ts'),
+    'segmentation-worker': path.join(sourceDir, 'segmentation-worker.ts'),
     panel: path.join(sourceDir, 'panel.tsx'),
     'audio-capture-processor': path.join(sourceDir, 'audio-capture-processor.ts')
   },
@@ -33,8 +35,8 @@ await build({
   format: 'iife',
   platform: 'browser',
   target: 'chrome120',
-  sourcemap: true,
-  minify: false,
+  sourcemap: false,
+  minify: true,
   define: {
     'process.env.NODE_ENV': '"production"'
   },

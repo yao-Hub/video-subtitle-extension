@@ -25,6 +25,7 @@ export interface SessionStatusEvent {
 export interface FinalCaptionEvent {
   type: 'caption.final';
   deliverySequence?: number;
+  recognitionEpoch: number;
   sessionId: string;
   segmentId: string;
   parentSegmentId: string;
@@ -39,12 +40,12 @@ export interface CaptionPreviewPart {
   text: string;
   audioStartUs: number;
   audioEndUs: number;
-  stable: boolean;
 }
 
 export interface CaptionPreviewEvent {
   type: 'caption.preview';
   deliverySequence?: number;
+  recognitionEpoch: number;
   sessionId: string;
   parentSegmentId: string;
   parts: CaptionPreviewPart[];
@@ -60,11 +61,13 @@ export type SessionEvent =
 export type InferenceEvent =
   | SessionEvent
   | CaptionPreviewEvent
-  | FinalCaptionEvent;
+  | FinalCaptionEvent
+  | RecognitionEpochEvent;
 
 export interface RawAsrCaptionEvent {
   type: 'asr.caption';
   kind: 'preview' | 'final';
+  recognitionEpoch: number;
   sessionId: string;
   segmentId: string;
   audioStartUs: number;
@@ -79,21 +82,77 @@ export type AsrWorkerEvent =
   | { type: 'worker.ready' }
   | { type: 'worker.error'; error: string };
 
-export type CaptionWorkerRequest =
-  | { type: 'caption.raw'; event: RawAsrCaptionEvent }
-  | { type: 'caption.flush' };
+export interface PunctuatedCaptionEvent {
+  kind: 'preview' | 'final';
+  recognitionEpoch: number;
+  sessionId: string;
+  segmentId: string;
+  audioStartUs: number;
+  audioEndUs: number;
+  text: string;
+  processingMs: number;
+}
 
-export type CaptionWorkerEvent =
-  | InferenceEvent
-  | { type: 'caption.ready' }
-  | { type: 'caption.drained' }
-  | { type: 'caption.error'; error: string };
+export type PunctuationWorkerRequest =
+  | { type: 'punctuation.raw'; event: RawAsrCaptionEvent }
+  | { type: 'punctuation.flush' };
+
+export type PunctuationWorkerEvent =
+  | { type: 'punctuation.ready' }
+  | {
+      type: 'punctuation.result';
+      event: PunctuatedCaptionEvent;
+    }
+  | { type: 'punctuation.drained' }
+  | { type: 'punctuation.error'; error: string };
+
+export type SegmentationWorkerRequest =
+  | {
+      type: 'segmentation.punctuated';
+      event: PunctuatedCaptionEvent;
+    }
+  | { type: 'segmentation.flush' };
+
+export type SegmentationWorkerEvent =
+  | { type: 'segmentation.ready' }
+  | CaptionPreviewEvent
+  | FinalCaptionEvent
+  | { type: 'segmentation.drained' }
+  | { type: 'segmentation.error'; error: string };
+
+export type VadWorkerRequest =
+  | { type: 'vad.start'; sessionId: string }
+  | { type: 'audio.frame'; samples: ArrayBuffer }
+  | { type: 'vad.seek' }
+  | { type: 'vad.stop' };
+
+export type VadWorkerEvent =
+  | { type: 'vad.ready' }
+  | { type: 'vad.speech-start'; sessionId: string; startUs: number }
+  | {
+      type: 'vad.speech-frame';
+      sessionId: string;
+      samples: ArrayBuffer;
+      startUs: number;
+      endUs: number;
+    }
+  | { type: 'vad.speech-end'; sessionId: string; endUs: number }
+  | { type: 'vad.stopped'; sessionId: string }
+  | { type: 'vad.error'; error: string };
 
 export interface VideoState {
   hasVideo: boolean;
+  videoId: string;
+  sequence: number;
   currentTime: number;
   paused: boolean;
   playbackRate: number;
+}
+
+export interface RecognitionEpochEvent {
+  type: 'recognition.epoch';
+  sessionId: string;
+  epoch: number;
 }
 
 export interface PanelContext {
@@ -116,7 +175,19 @@ export type ExtensionRequest =
   | { type: 'panel.stop' }
   | { type: 'panel.get-runtime-state' }
   | { type: 'panel.get-video-state'; tabId: number }
-  | { type: 'panel.jump-to-time'; tabId: number; seconds: number };
+  | {
+      type: 'panel.jump-to-time';
+      tabId: number;
+      seconds: number;
+    }
+  | { type: 'panel.pause-recognition' }
+  | { type: 'panel.resume-recognition' }
+  | {
+      type: 'panel.schedule-video-boundary';
+      tabId: number;
+      videoId: string;
+      boundaryVideoTimeMs: number | null;
+    };
 
 export type OffscreenRequest =
   | {
@@ -124,6 +195,8 @@ export type OffscreenRequest =
       streamId: string;
     }
   | { type: 'capture.stop' }
+  | { type: 'capture.pause' }
+  | { type: 'capture.resume' }
   | { type: 'capture.seek' };
 
 export interface BackgroundRequestMessage {
@@ -146,6 +219,19 @@ export interface PanelEventMessage {
   target: 'panel';
   type: 'inference.event';
   event: InferenceEvent;
+}
+
+export interface PageVideoStateMessage {
+  target: 'background';
+  type: 'page.video-state';
+  state: VideoState;
+}
+
+export interface PanelVideoStateMessage {
+  target: 'panel';
+  type: 'video.state';
+  tabId: number;
+  state: VideoState;
 }
 
 export interface RuntimeResponse<T = unknown> {

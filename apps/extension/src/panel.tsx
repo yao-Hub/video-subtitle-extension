@@ -4,6 +4,10 @@ import {
   captionsShareOverlappingText,
   normalizeCaptionText
 } from './caption-text';
+import {
+  getNextRecognitionBoundary,
+  shouldRecognizeAtTime
+} from './recognition-gate';
 import type {
   BackgroundRequestMessage,
   ExtensionRequest,
@@ -11,6 +15,7 @@ import type {
   InferenceEvent,
   PanelContext,
   PanelEventMessage,
+  PanelVideoStateMessage,
   RuntimeResponse,
   SessionRuntimeState,
   VideoState
@@ -18,7 +23,6 @@ import type {
 
 type CaptionRow = Omit<FinalCaptionEvent, 'type'> & {
   type: 'caption.partial' | 'caption.final';
-  stablePreview?: boolean;
   videoStartMs: number;
   videoEndMs: number;
 };
@@ -81,6 +85,8 @@ function Panel(): React.JSX.Element {
   const [tabId, setTabId] = useState(0);
   const [video, setVideo] = useState<VideoState>({
     hasVideo: false,
+    videoId: '',
+    sequence: 0,
     currentTime: 0,
     paused: true,
     playbackRate: 1
@@ -107,14 +113,108 @@ function Panel(): React.JSX.Element {
   const autoScrollRef = useRef(true);
   const lastSeekAtRef = useRef(0);
   const lastDeliverySequenceRef = useRef(0);
+  const lastVideoSequenceRef = useRef(0);
+  const activeRecognitionEpochRef = useRef(0);
   const lastVideoSyncRef = useRef<{
+    videoId: string;
     currentTime: number;
     paused: boolean;
     playbackRate: number;
     syncedAt: number;
   } | null>(null);
+  const captionsRef = useRef<CaptionRow[]>(captions);
+  const videoStateRef = useRef(video);
+  const recognitionPausedRef = useRef(false);
+  captionsRef.current = captions;
+  videoStateRef.current = video;
+
+  function reportError(error: unknown, fallback: string): void {
+    setStatus({
+      type: 'error',
+      text: error instanceof Error ? error.message : fallback
+    });
+  }
+
+  function clearPartialCaptions(): void {
+    const finals = captionsRef.current.filter(
+      (caption) => caption.type === 'caption.final'
+    );
+    captionsRef.current = finals;
+    setCaptions(finals);
+  }
+
+  function syncRecognitionGate(videoTimeMs: number): void {
+    if (!runningRef.current) {
+      return;
+    }
+    const shouldRecognize = shouldRecognizeAtTime(
+      videoTimeMs,
+      captionsRef.current
+    );
+
+    if (!shouldRecognize && !recognitionPausedRef.current) {
+      recognitionPausedRef.current = true;
+      setStatus({
+        type: 'idle',
+        text: '正在回放已生成字幕区间，识别已暂停'
+      });
+      clearPartialCaptions();
+      void sendRequest({ type: 'panel.pause-recognition' }).catch((error) => {
+        if (!recognitionPausedRef.current) {
+          return;
+        }
+        recognitionPausedRef.current = false;
+        reportError(error, '暂停识别失败');
+      });
+      return;
+    }
+
+    if (shouldRecognize && recognitionPausedRef.current) {
+      recognitionPausedRef.current = false;
+      setStatus({
+        type: 'active',
+        text: '继续识别未生成的时间区间'
+      });
+      void sendRequest({ type: 'panel.resume-recognition' }).catch((error) => {
+        if (recognitionPausedRef.current) {
+          return;
+        }
+        recognitionPausedRef.current = true;
+        reportError(error, '恢复识别失败');
+      });
+    }
+  }
+
+  function scheduleVideoBoundary(nextVideo: VideoState): void {
+    if (!tabIdRef.current) {
+      return;
+    }
+    const boundaryVideoTimeMs = (
+      runningRef.current && !nextVideo.paused
+    )
+      ? getNextRecognitionBoundary(
+          nextVideo.currentTime * 1000,
+          captionsRef.current
+        )
+      : null;
+    void sendRequest({
+      type: 'panel.schedule-video-boundary',
+      tabId: tabIdRef.current,
+      videoId: nextVideo.videoId,
+      boundaryVideoTimeMs
+    }).catch((error) => {
+      reportError(error, '字幕边界调度失败');
+    });
+  }
 
   function updateOffset(nextVideo: VideoState, force = false): void {
+    const previousVideoId = videoStateRef.current.videoId;
+    if (previousVideoId && nextVideo.videoId !== previousVideoId) {
+      captionsRef.current = [];
+      setCaptions([]);
+      setStatus({ type: 'idle', text: '视频已切换，等待字幕状态同步' });
+    }
+    videoStateRef.current = nextVideo;
     setVideo(nextVideo);
     if (!runningRef.current || !startedAtRef.current) {
       return;
@@ -135,6 +235,7 @@ function Panel(): React.JSX.Element {
     const timelineChanged = (
       force
       || !previous
+      || previous.videoId !== nextVideo.videoId
       || previous.paused !== nextVideo.paused
       || previous.playbackRate !== nextVideo.playbackRate
       || Math.abs(actualDelta - expectedDelta) > 0.75
@@ -147,11 +248,14 @@ function Panel(): React.JSX.Element {
       };
     }
     lastVideoSyncRef.current = {
+      videoId: nextVideo.videoId,
       currentTime: nextVideo.currentTime,
       paused: nextVideo.paused,
       playbackRate: nextVideo.playbackRate,
       syncedAt: now
     };
+    syncRecognitionGate(nextVideo.currentTime * 1000);
+    scheduleVideoBoundary(nextVideo);
   }
 
   function getVideoTimeMs(audioUs: number): number {
@@ -175,6 +279,7 @@ function Panel(): React.JSX.Element {
     });
     setTabId(context.tabId);
     tabIdRef.current = context.tabId;
+    lastVideoSequenceRef.current = context.video.sequence;
     updateOffset(context.video);
     return context;
   }
@@ -220,11 +325,31 @@ function Panel(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    const listener = (message: PanelEventMessage) => {
-      if (message?.target !== 'panel' || message.type !== 'inference.event') {
+    const listener = (
+      message: PanelEventMessage | PanelVideoStateMessage
+    ) => {
+      if (message?.target !== 'panel') {
         return;
       }
 
+      if (message.type === 'video.state') {
+        if (tabIdRef.current && message.tabId !== tabIdRef.current) {
+          return;
+        }
+        if (
+          message.state.sequence <= lastVideoSequenceRef.current
+          && message.state.videoId === videoStateRef.current.videoId
+        ) {
+          return;
+        }
+        lastVideoSequenceRef.current = message.state.sequence;
+        updateOffset(message.state);
+        return;
+      }
+
+      if (message.type !== 'inference.event') {
+        return;
+      }
       const event: InferenceEvent = message.event;
       if (
         'sessionId' in event
@@ -237,6 +362,8 @@ function Panel(): React.JSX.Element {
 
       if (event.type === 'session.started') {
         lastDeliverySequenceRef.current = 0;
+        activeRecognitionEpochRef.current = 0;
+        recognitionPausedRef.current = false;
         setActiveSessionId(event.sessionId);
         setStatus({
           type: 'active',
@@ -247,6 +374,18 @@ function Panel(): React.JSX.Element {
 
       if (event.type === 'session.stopped') {
         runningRef.current = false;
+        recognitionPausedRef.current = false;
+        activeRecognitionEpochRef.current = 0;
+        if (tabIdRef.current) {
+          void sendRequest({
+            type: 'panel.schedule-video-boundary',
+            tabId: tabIdRef.current,
+            videoId: videoStateRef.current.videoId,
+            boundaryVideoTimeMs: null
+          }).catch((error) => {
+            reportError(error, '清除字幕边界调度失败');
+          });
+        }
         setRunning(false);
         setStatus({ type: 'idle', text: '会话已停止' });
         return;
@@ -269,7 +408,16 @@ function Panel(): React.JSX.Element {
         return;
       }
 
+      if (event.type === 'recognition.epoch') {
+        activeRecognitionEpochRef.current = event.epoch;
+        clearPartialCaptions();
+        return;
+      }
+
       if (event.type === 'caption.preview') {
+        if (event.recognitionEpoch !== activeRecognitionEpochRef.current) {
+          return;
+        }
         if (
           event.deliverySequence !== undefined
           && event.deliverySequence <= lastDeliverySequenceRef.current
@@ -291,22 +439,10 @@ function Panel(): React.JSX.Element {
               && item.parentSegmentId !== event.parentSegmentId
             )
           );
-          const previousParts = new Map(
-            previous
-              .filter((item) => (
-                item.parentSegmentId === event.parentSegmentId
-                && item.type === 'caption.partial'
-              ))
-              .map((item) => [item.segmentId, item])
-          );
           for (const part of event.parts) {
-            const existing = previousParts.get(part.segmentId);
-            if (part.stable && existing?.stablePreview) {
-              next.push(existing);
-              continue;
-            }
             const row: CaptionRow = {
               type: 'caption.partial',
+              recognitionEpoch: event.recognitionEpoch,
               sessionId: event.sessionId,
               segmentId: part.segmentId,
               parentSegmentId: event.parentSegmentId,
@@ -314,24 +450,23 @@ function Panel(): React.JSX.Element {
               audioEndUs: part.audioEndUs,
               text: part.text,
               processingMs: event.processingMs,
-              stablePreview: part.stable,
               videoStartMs: getVideoTimeMs(part.audioStartUs),
               videoEndMs: getVideoTimeMs(part.audioEndUs)
             };
-            if (!next.some((item) => timeRangesOverlap(
-              row.videoStartMs,
-              row.videoEndMs,
-              item.videoStartMs,
-              item.videoEndMs
-            ) && item.type === 'caption.final')) {
-              next.push(row);
-            }
+            next.push(row);
           }
+          next.sort((first, second) => (
+            first.videoStartMs - second.videoStartMs
+            || first.segmentId.localeCompare(second.segmentId)
+          ));
           return next;
         });
         return;
       }
 
+      if (event.recognitionEpoch !== activeRecognitionEpochRef.current) {
+        return;
+      }
       if (
         event.deliverySequence !== undefined
         && event.deliverySequence <= lastDeliverySequenceRef.current
@@ -382,6 +517,10 @@ function Panel(): React.JSX.Element {
             videoEndMs: Math.max(existing.videoEndMs, row.videoEndMs)
           };
         }
+        next.sort((first, second) => (
+          first.videoStartMs - second.videoStartMs
+          || first.segmentId.localeCompare(second.segmentId)
+        ));
         return next;
       });
     };
@@ -395,16 +534,25 @@ function Panel(): React.JSX.Element {
       return;
     }
 
-    const sync = () => {
-      void sendRequest<VideoState>({
-        type: 'panel.get-video-state',
-        tabId
-      }).then(updateOffset).catch(() => undefined);
-    };
-    sync();
-    const timer = window.setInterval(sync, 1_000);
-    return () => window.clearInterval(timer);
+    void sendRequest<VideoState>({
+      type: 'panel.get-video-state',
+      tabId
+    }).then((nextVideo) => {
+      lastVideoSequenceRef.current = nextVideo.sequence;
+      updateOffset(nextVideo);
+    }).catch((error) => {
+      reportError(error, '读取播放器状态失败');
+    });
   }, [running, tabId]);
+
+  useEffect(() => {
+    if (!runningRef.current) {
+      return;
+    }
+    const currentVideo = videoStateRef.current;
+    syncRecognitionGate(currentVideo.currentTime * 1000);
+    scheduleVideoBoundary(currentVideo);
+  }, [captions]);
 
   useLayoutEffect(() => {
     if (!autoScrollRef.current) {
@@ -455,8 +603,10 @@ function Panel(): React.JSX.Element {
     setStatus({ type: 'idle', text: '正在启动音频捕获' });
     setCaptions([]);
     lastDeliverySequenceRef.current = 0;
+    activeRecognitionEpochRef.current = 0;
     lastVideoSyncRef.current = null;
     timelineAnchorRef.current = null;
+    recognitionPausedRef.current = false;
     setLatestProcessingMs(0);
     autoScrollRef.current = true;
     setShowScrollToLatest(false);
@@ -493,6 +643,17 @@ function Panel(): React.JSX.Element {
       await sendRequest<SessionRuntimeState>({ type: 'panel.stop' });
       runningRef.current = false;
       startedAtRef.current = 0;
+      recognitionPausedRef.current = false;
+      if (tabIdRef.current) {
+        void sendRequest({
+          type: 'panel.schedule-video-boundary',
+          tabId: tabIdRef.current,
+          videoId: videoStateRef.current.videoId,
+          boundaryVideoTimeMs: null
+        }).catch((error) => {
+          reportError(error, '清除字幕边界调度失败');
+        });
+      }
       setRunning(false);
       setActiveSessionId('');
       setStatus({ type: 'idle', text: '会话已停止' });
@@ -529,7 +690,12 @@ function Panel(): React.JSX.Element {
         void sendRequest<VideoState>({
           type: 'panel.get-video-state',
           tabId: tabIdRef.current
-        }).then(updateOffset).catch(() => undefined);
+        }).then((nextVideo) => {
+          lastVideoSequenceRef.current = nextVideo.sequence;
+          updateOffset(nextVideo);
+        }).catch((error) => {
+          reportError(error, '更新播放器状态失败');
+        });
       }, 120);
     } catch (error) {
       setStatus({

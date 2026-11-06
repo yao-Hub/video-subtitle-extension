@@ -1,4 +1,4 @@
-# video-subtitle-enhanced
+# video-subtitle-extension
 
 纯 Chrome 扩展实现的中文实时字幕工具。
 
@@ -17,7 +17,9 @@
 | 浏览器内 WASM 中文识别       | 已实现 |
 | 临时字幕和终稿替换           | 已实现 |
 | CT-Punc 驱动的实时分句       | 已实现 |
-| 稳定分句前缀、仅更新尾句     | 已实现 |
+| 自适应 VAD 开/关阈值         | 已实现 |
+| 播放器事件驱动状态同步       | 已实现 |
+| 暂停和跳转后的旧结果隔离     | 已实现 |
 | 自动滚动及手动滚动保护       | 已实现 |
 | 长句自动切分为多条字幕       | 已实现 |
 | 字幕时间轴                   | 已实现 |
@@ -49,18 +51,34 @@
   ↓ chrome.tabCapture
 Offscreen Document
   ↓ AudioWorklet：16 kHz PCM
+VAD Web Worker
+  └── Silero VAD：检测人声并输出语音帧
 ASR Web Worker
-  ├── Silero VAD：检测人声并分段
-  └── Streaming Zipformer：音频转原始文字
-Caption Web Worker
-  └── CT-Punc：标点与模型标点分句
+  └── Streaming Zipformer：语音转原始文字
+Punctuation Web Worker
+  └── CT-Punc：恢复标点
+Segmentation Web Worker
+  └── 模型标点驱动分句
 Popup Panel
 ```
 
-ASR Worker 只发送原始 `asr.caption`；Caption Worker 只消费这些原始结果并生成最终字幕事件。
-Caption Worker 未就绪、排队或异常时，Offscreen 直接显示原始识别结果，音频捕获和 ASR 不会停止。
+ASR Worker 只发送原始 `asr.caption`；Punctuation Worker 只恢复标点；Segmentation Worker 只负责分句。
+后处理 Worker 未就绪、排队或异常时，Offscreen 直接显示原始识别结果，音频捕获和 ASR 不会停止。
 
 运行过程没有 HTTP、WebSocket、localhost 服务或远程 API。
+
+Silero VAD 仍输出人声概率，但开/关判断使用自适应门限：
+
+| 阶段       | 行为                                                        |
+| ---------- | ----------------------------------------------------------- |
+| 启动预热   | 前 32 个非语音块使用 `0.5 / 0.35` 引导阈值                   |
+| 稳定运行   | 根据噪声底和信号峰值动态计算开/关阈值                       |
+| 人声期间   | 冻结噪声学习，避免把当前人声误学为背景噪声                  |
+| 暂停与跳转 | 递增识别代次，Offscreen 和 Panel 丢弃旧代次的异步结果       |
+
+播放器状态通过 `play`、`pause`、`seeking`、`seeked`、`ratechange` 等事件上报，
+再按下一个字幕区间边界调度一次定时器，不使用固定间隔轮询。页面状态同时携带
+`videoId` 和单调序号，避免多视频页面或异步消息乱序影响当前视频。
 
 ## 工程结构
 
@@ -78,8 +96,10 @@ Caption Worker 未就绪、排队或异常时，Offscreen 直接显示原始识�
 │       ├── background.ts
 │       ├── page-bridge.ts
 │       ├── offscreen.ts
+│       ├── vad-worker.ts
 │       ├── asr-worker.ts
-│       ├── caption-worker.ts
+│       ├── punctuation-worker.ts
+│       ├── segmentation-worker.ts
 │       ├── panel.tsx
 │       └── audio-capture-processor.ts
 ├── packages/protocol/              # 扩展内部消息类型
@@ -142,15 +162,23 @@ D:\project\video-subtitle-extension\dist
 4. 首次启动会加载人声检测模型、识别模型、中文标点模型和 WASM 运行时。
 5. 点击“启动中文字幕”。
 6. 黄色虚线字幕是临时结果，普通字幕是终稿。
-7. 点击终稿字幕可跳转到对应视频时间。
+7. 点击字幕只定位视频；已生成区间回放时暂停识别，未生成的历史区间继续识别。
 
 ## 开发验证
 
 ```powershell
 npm run typecheck
+npm run test:vad
+npm run test:gate
 npm run test:punctuation
 npm run test:segmenter
 npm run build
+```
+
+完整检查使用：
+
+```powershell
+npm run verify
 ```
 
 浏览器 WASM 烟雾测试：
@@ -180,7 +208,7 @@ http://127.0.0.1:8123/tests/browser/wasm-smoke.html
 
 - 扩展包较大，包含识别、标点和推理运行时资源。
 - 模型加载需要一定时间，首次启动更明显。
-- VAD 使用 Silero 概率阈值，复杂音乐、混响和远场声音仍可能误判。
+- VAD 使用 Silero 概率和自适应门限，复杂音乐、混响和远场声音仍可能误判。
 - 实时预览和终稿都使用 CT-Punc 恢复中文标点，再由模型标点决定字幕边界；无标点时按最大宽度兜底。
 - 当前只做中文识别，不做外语翻译。
 - 尚未实现 SRT/VTT 导出和历史记录。
