@@ -180,12 +180,23 @@ function Panel(): React.JSX.Element {
   }
 
   useEffect(() => {
-    void refreshContext().catch((error) => {
-      setStatus({
-        type: 'error',
-        text: error instanceof Error ? error.message : '无法读取当前页面'
+    void refreshContext()
+      .then((context) => {
+        if (!runningRef.current) {
+          setStatus({
+            type: 'idle',
+            text: context.video.hasVideo
+              ? '已检测到视频，可以启动字幕'
+              : '当前标签页未检测到视频'
+          });
+        }
+      })
+      .catch((error) => {
+        setStatus({
+          type: 'error',
+          text: error instanceof Error ? error.message : '无法读取当前页面'
+        });
       });
-    });
 
     void sendRequest<SessionRuntimeState>({
       type: 'panel.get-runtime-state'
